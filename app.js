@@ -15,6 +15,8 @@
     dwo: null,               // working clone of the open workout
     editing: false,
     repeatRefs: [], sets: 1,
+    coach: null,             // {userId, email} when an admin is viewing a member
+    coachData: null,         // that member's loaded profile data
   };
   var $app = document.getElementById("app");
 
@@ -58,8 +60,16 @@
     });
     return changed;
   }
+  // the profile currently being viewed/edited — the signed-in user, or (in
+  // coach mode) the member an admin has opened.
+  function activeData() { return state.coach ? state.coachData : state.data; }
+  async function saveActive() {
+    if (state.coach) { await sb.from("profiles").update({ data: state.coachData, updated_at: new Date().toISOString() }).eq("user_id", state.coach.userId); }
+    else { await saveData(); }
+  }
+
   function findWorkout(id) {
-    var p = state.data.plan; if (!p) return null;
+    var p = activeData().plan; if (!p) return null;
     for (var i = 0; i < p.weeks.length; i++) {
       var w = p.weeks[i].workouts.find(function (x) { return x.id === id; });
       if (w) return { w: w, weekIndex: p.weeks[i].index };
@@ -180,10 +190,11 @@
     if (state.mode === "local") $app.appendChild(h('<div class="banner">Running locally — your plan is saved in this browser only. Add your Supabase keys in <code>config.js</code> to enable sign-in, invite codes and cloud save.</div>'));
 
     var nav = h('<nav class="tabs"></nav>');
-    tabs.forEach(function (t) { var b = h('<button>' + t[1] + '</button>'); if (state.tab === t[0]) b.className = "active"; b.onclick = function () { state.tab = t[0]; renderMain(); }; nav.appendChild(b); });
+    tabs.forEach(function (t) { var b = h('<button>' + t[1] + '</button>'); if (state.tab === t[0] && !state.coach) b.className = "active"; b.onclick = function () { state.coach = null; state.coachData = null; state.tab = t[0]; renderMain(); }; nav.appendChild(b); });
     $app.appendChild(nav);
 
     var body = h('<div id="body"></div>'); $app.appendChild(body);
+    if (state.coach) { renderCoach(body); if (state.detail && state.dwo) $app.appendChild(buildSheet()); return; }
     if (state.tab === "plan") renderPlan(body);
     else if (state.tab === "paces") renderPaces(body);
     else if (state.tab === "progress") renderProgress(body);
@@ -260,6 +271,7 @@
           (w.isCustomized ? '<span class="badge-edit"> ·edited</span>' : "") +
           '<span class="wo-day">' + dayLabel(w.dateISO) + '</span></div>' +
           '<div class="wo-detail">' + esc(w.detail) + '</div>' +
+          (w.coachNote ? '<div class="note-line" style="color:var(--accent)">🧑‍🏫 ' + esc(w.coachNote) + '</div>' : "") +
           (w.note ? '<div class="note-line">📝 ' + esc(w.note) + '</div>' : "") + '</div>');
         wo.onclick = function () { openDetail(w.id); };
         box.appendChild(wo);
@@ -353,20 +365,37 @@
       sheet.appendChild(sec);
     }
 
-    // ----- log -----
-    var log = h('<div class="sec"><h4>Log this session</h4></div>');
-    var chk = h('<label class="chk"><input type="checkbox" ' + (w.completed ? "checked" : "") + ' /> Completed</label>');
-    chk.querySelector("input").onchange = function (e) { w.completed = e.target.checked; };
-    log.appendChild(chk);
-    var rpe = h('<div style="margin-top:10px"><div class="row spread"><span class="small">Effort (RPE)</span><span class="small mono" id="rpev">' + (w.rpe || "—") + ' / 10</span></div><input type="range" min="1" max="10" step="1" value="' + (w.rpe || 5) + '" /></div>');
-    rpe.querySelector("input").oninput = function (e) { w.rpe = parseInt(e.target.value, 10); document.getElementById("rpev").textContent = w.rpe + " / 10"; };
-    log.appendChild(rpe);
-    var note = h('<div style="margin-top:10px"><label class="field">Notes</label><textarea placeholder="How did it feel? Weather, splits, niggles…">' + esc(w.note || "") + '</textarea></div>');
-    note.querySelector("textarea").oninput = function (e) { w.note = e.target.value; };
-    log.appendChild(note);
-    sheet.appendChild(log);
+    var coach = !!state.coach;
 
-    var save = h('<button class="btn" style="margin-top:18px">Save</button>');
+    // ----- coach note -----
+    if (coach) {
+      var cn = h('<div class="sec"><h4>Coach note (the athlete sees this)</h4><textarea placeholder="Advice, tweaks, cues for this session…">' + esc(w.coachNote || "") + '</textarea></div>');
+      cn.querySelector("textarea").oninput = function (e) { w.coachNote = e.target.value; };
+      sheet.appendChild(cn);
+    } else if (w.coachNote) {
+      sheet.appendChild(h('<div class="sec"><h4>🧑‍🏫 Coach note</h4><div class="note-line" style="color:var(--accent)">' + esc(w.coachNote) + '</div></div>'));
+    }
+
+    // ----- log -----
+    if (coach) {
+      sheet.appendChild(h('<div class="sec"><h4>Athlete log</h4><div class="small muted">' +
+        (w.completed ? "✓ Completed" : "Not completed yet") + (w.rpe ? " · RPE " + w.rpe + "/10" : "") + '</div>' +
+        (w.note ? '<div class="note-line">📝 ' + esc(w.note) + '</div>' : "") + '</div>'));
+    } else {
+      var log = h('<div class="sec"><h4>Log this session</h4></div>');
+      var chk = h('<label class="chk"><input type="checkbox" ' + (w.completed ? "checked" : "") + ' /> Completed</label>');
+      chk.querySelector("input").onchange = function (e) { w.completed = e.target.checked; };
+      log.appendChild(chk);
+      var rpe = h('<div style="margin-top:10px"><div class="row spread"><span class="small">Effort (RPE)</span><span class="small mono" id="rpev">' + (w.rpe || "—") + ' / 10</span></div><input type="range" min="1" max="10" step="1" value="' + (w.rpe || 5) + '" /></div>');
+      rpe.querySelector("input").oninput = function (e) { w.rpe = parseInt(e.target.value, 10); document.getElementById("rpev").textContent = w.rpe + " / 10"; };
+      log.appendChild(rpe);
+      var note = h('<div style="margin-top:10px"><label class="field">Notes</label><textarea placeholder="How did it feel? Weather, splits, niggles…">' + esc(w.note || "") + '</textarea></div>');
+      note.querySelector("textarea").oninput = function (e) { w.note = e.target.value; };
+      log.appendChild(note);
+      sheet.appendChild(log);
+    }
+
+    var save = h('<button class="btn" style="margin-top:18px">' + (coach ? "Save changes for athlete" : "Save") + '</button>');
     save.onclick = async function () { if (w.isCustomized) w.detail = E.summarizeSteps(w.steps); await commitWorkout(w); closeDetail(); };
     sheet.appendChild(save);
   }
@@ -391,9 +420,10 @@
   }
   function resetWorkout(w) {
     // regenerate just this workout's steps from the engine using current velocity + its kind
-    var v = E.velocityFromTest(state.data.testMeters, state.data.testMinutes);
+    var d = activeData();
+    var v = E.velocityFromTest(d.testMeters, d.testMinutes);
     if (w.type === "quality" && w.kind) {
-      var wk = (state.data.plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; }) || {});
+      var wk = (d.plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; }) || {});
       var fresh = E.qualityWorkout(w.kind, wk.phase || "build", v);
       fresh.steps.forEach(function (s) { s.id = rid("s-"); });
       w.steps = fresh.steps; w.detail = fresh.detail; w.isCustomized = false;
@@ -402,11 +432,11 @@
     }
   }
   async function commitWorkout(w) {
-    var f = findWorkout(w.id); if (!f) return;
-    var wk = state.data.plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; });
+    var wk = activeData().plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; });
+    if (!wk) return;
     var idx = wk.workouts.findIndex(function (x) { return x.id === w.id; });
     if (idx >= 0) wk.workouts[idx] = w;
-    await saveData();
+    await saveActive();
   }
 
   // ============================================================ paces tab
@@ -506,11 +536,15 @@
     box.className = ""; box.innerHTML = '<table class="codes"><tr><th>Email</th><th>Joined</th><th>Role</th><th></th></tr>' + r.data.map(function (m) {
       var role = m.is_admin ? '<span class="pill used">admin</span>' : '<span class="pill free">member</span>';
       var me = m.user_id === state.user.id;
-      var act = me ? '<span class="muted small">you</span>' : '<button class="mini" data-uid="' + m.user_id + '" data-admin="' + (m.is_admin ? 1 : 0) + '">' + (m.is_admin ? "remove admin" : "make admin") + '</button>';
-      return '<tr><td>' + esc(m.email || "") + '</td><td>' + new Date(m.created_at).toLocaleDateString() + '</td><td>' + role + '</td><td>' + act + '</td></tr>';
+      var coachBtn = '<button class="mini" data-coach="' + m.user_id + '" data-email="' + esc(m.email || "") + '">plan ▸</button>';
+      var adminBtn = me ? '<span class="muted small">you</span>' : '<button class="mini" data-uid="' + m.user_id + '" data-admin="' + (m.is_admin ? 1 : 0) + '">' + (m.is_admin ? "remove admin" : "make admin") + '</button>';
+      return '<tr><td>' + esc(m.email || "") + '</td><td>' + new Date(m.created_at).toLocaleDateString() + '</td><td>' + role + '</td><td style="white-space:nowrap">' + coachBtn + ' ' + adminBtn + '</td></tr>';
     }).join("") + '</table>';
     Array.prototype.forEach.call(box.querySelectorAll("[data-uid]"), function (b) {
       b.onclick = async function () { await sb.from("members").update({ is_admin: b.getAttribute("data-admin") !== "1" }).eq("user_id", b.getAttribute("data-uid")); loadMembers(); };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll("[data-coach]"), function (b) {
+      b.onclick = function () { openCoach(b.getAttribute("data-coach"), b.getAttribute("data-email")); };
     });
   }
   function rand4() { var s = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", o = ""; for (var i = 0; i < 4; i++) o += s[Math.floor(Math.random() * s.length)]; return o; }
@@ -698,6 +732,54 @@
       if (!confirm("Erase everything and start over? This cannot be undone.")) return;
       state.data = {}; await saveData(); state.tab = "plan"; applyTheme(); renderMain();
     };
+  }
+
+  // ============================================================ coach view
+  async function openCoach(userId, email) {
+    state.tab = "admin";
+    var r = await sb.from("profiles").select("data").eq("user_id", userId).maybeSingle();
+    if (r.error) { alert(r.error.message); return; }
+    state.coachData = (r.data && r.data.data) || {};
+    if (state.coachData.plan) ensureIds(state.coachData.plan);
+    state.coach = { userId: userId, email: email };
+    renderMain();
+  }
+
+  function renderCoach(body) {
+    var d = state.coachData;
+    var back = h('<a class="link small">← Back to members</a>');
+    back.onclick = function () { state.coach = null; state.coachData = null; renderMain(); };
+    body.appendChild(back);
+    body.appendChild(h('<header class="top" style="padding-top:8px"><h1 style="font-size:19px">🧑‍🏫 ' + esc(state.coach.email) + '</h1></header>'));
+
+    if (!d || !(d.testMeters > 0)) { body.appendChild(h('<div class="card muted">This member hasn\'t set up a test yet.</div>')); return; }
+    var v = E.velocityFromTest(d.testMeters, d.testMinutes);
+    var info = h('<div class="card small"><div class="muted">Reference pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + '/km</b> · test ' + d.testMeters + ' m / ' + d.testMinutes + ' min' + (d.goal ? ' · goal ' + esc(d.goal.title) : "") + '</div></div>');
+    body.appendChild(info);
+    if (d.goal && d.plan) {
+      var f = E.forecast(d.plan, d, E.currentWeekIndex(d.plan));
+      if (f) body.appendChild(h('<div class="card"><div style="font-weight:700;color:' + (f.isOnTrack ? "var(--easy)" : "var(--quality)") + '">' + esc(f.statusText) + '</div><div class="muted small" style="margin-top:4px">Projected ' + E.fmtHMS(f.predictedFinishSeconds) + ' vs goal ' + E.fmtHMS(f.goalSeconds) + '</div></div>'));
+    }
+    if (!d.plan) { body.appendChild(h('<div class="card muted">No plan generated yet.</div>')); return; }
+
+    body.appendChild(h('<p class="muted small">Tap any session to adjust it or leave a coach note.</p>'));
+    d.plan.weeks.forEach(function (wk) {
+      body.appendChild(h('<div class="week-head"><span class="wnum">Week ' + wk.index + '</span><span class="phase">' + wk.phase + '</span><span class="muted small" style="margin-left:auto">' + weekRange(wk) + '</span></div>'));
+      var box = h('<div class="wk"></div>');
+      wk.workouts.forEach(function (w) {
+        var b = BADGE[w.type] || ["", "var(--muted)"];
+        var wo = h('<div class="wo"><div class="wo-top">' +
+          '<span class="badge" style="background:' + b[1] + '">' + b[0] + '</span>' +
+          '<span>' + (w.completed ? "✓ " : "") + esc(w.title) + '</span>' +
+          (w.isCustomized ? '<span class="badge-edit"> ·edited</span>' : "") +
+          '<span class="wo-day">' + dayLabel(w.dateISO) + '</span></div>' +
+          '<div class="wo-detail">' + esc(w.detail) + '</div>' +
+          (w.coachNote ? '<div class="note-line" style="color:var(--accent)">🧑‍🏫 ' + esc(w.coachNote) + '</div>' : "") + '</div>');
+        wo.onclick = function () { openDetail(w.id); };
+        box.appendChild(wo);
+      });
+      body.appendChild(box);
+    });
   }
 
   // ============================================================ dates / boot
