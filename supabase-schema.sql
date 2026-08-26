@@ -15,10 +15,31 @@ create table if not exists public.members (
 );
 alter table public.members enable row level security;
 
+-- Helper: is the caller an admin?  SECURITY DEFINER so it bypasses RLS and
+-- never recurses when used inside a members/profiles policy.
+create or replace function public.is_admin()
+returns boolean
+language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.members where user_id = auth.uid() and is_admin);
+$$;
+grant execute on function public.is_admin() to authenticated;
+
 drop policy if exists "read own membership" on public.members;
 create policy "read own membership"
   on public.members for select
   using (auth.uid() = user_id);
+
+-- Admins can see and edit every member (view/promote/demote in the app).
+drop policy if exists "admin read members" on public.members;
+create policy "admin read members"
+  on public.members for select
+  using (public.is_admin());
+
+drop policy if exists "admin update members" on public.members;
+create policy "admin update members"
+  on public.members for update
+  using (public.is_admin())
+  with check (public.is_admin());
 
 -- 2) INVITE CODES ------------------------------------------------------------
 create table if not exists public.invite_codes (
@@ -35,8 +56,8 @@ alter table public.invite_codes enable row level security;
 drop policy if exists "admin manage codes" on public.invite_codes;
 create policy "admin manage codes"
   on public.invite_codes for all
-  using      (exists (select 1 from public.members m where m.user_id = auth.uid() and m.is_admin))
-  with check (exists (select 1 from public.members m where m.user_id = auth.uid() and m.is_admin));
+  using      (public.is_admin())
+  with check (public.is_admin());
 
 -- 3) PER-USER DATA (profile + plan stored as one JSON blob) ------------------
 create table if not exists public.profiles (
@@ -51,6 +72,12 @@ create policy "own profile"
   on public.profiles for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- Admins can read (not silently edit) everyone's profile/plan.
+drop policy if exists "admin read profiles" on public.profiles;
+create policy "admin read profiles"
+  on public.profiles for select
+  using (public.is_admin());
 
 -- 4) REDEEM FUNCTION ---------------------------------------------------------
 -- Atomically: claim an unused, enabled code and grant membership.

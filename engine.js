@@ -415,8 +415,185 @@
   function iso(d) { return new Date(d).toISOString(); }
   function withDate(w, d) { w.dateISO = iso(d); return w; }
 
+  // ---- Volume estimate (mirrors WorkoutFormatting.estimatedMeters) ---------
+
+  function stepFactor(step) {
+    if (step.kind === "work") return 0.95;
+    if (step.kind === "warmup" || step.kind === "cooldown") return 0.80;
+    return step.restIsJog !== false ? 0.70 : 0.0;   // recovery
+  }
+  function estimateMeters(steps, velocity) {
+    if (!(velocity > 0) || !steps) return 0;
+    var total = 0;
+    steps.forEach(function (s) {
+      var reps = Math.max(1, s.repeatCount || 1);
+      if (s.durationType === "distance") total += reps * s.durationValue;
+      else if (s.durationType === "time") total += reps * s.durationValue * velocity * stepFactor(s);
+      else total += reps * 60 * velocity * 0.7;
+    });
+    return total;
+  }
+  function workoutMeters(w, velocity) {
+    if (w.plannedMeters > 0) return w.plannedMeters;
+    if (w.steps) return estimateMeters(w.steps, velocity);
+    return 0;
+  }
+  function weekPlannedMeters(week, velocity) {
+    return (week.workouts || []).reduce(function (a, w) { return a + workoutMeters(w, velocity); }, 0);
+  }
+  function weekCompletion(week) {
+    var total = (week.workouts || []).length;
+    if (!total) return 0;
+    return week.workouts.filter(function (w) { return w.completed; }).length / total;
+  }
+
+  // ---- Which week is "now" --------------------------------------------------
+
+  function currentWeekIndex(plan, nowDate) {
+    var now = nowDate ? nowDate.getTime() : Date.now();
+    var weeks = plan.weeks;
+    for (var i = 0; i < weeks.length; i++) {
+      var s = new Date(weeks[i].startISO).getTime(), e = s + 7 * 86400000;
+      if (now >= s && now < e) return weeks[i].index;
+    }
+    var first = new Date(weeks[0].startISO).getTime();
+    if (now < first) return weeks[0].index;
+    return weeks[weeks.length - 1].index;   // past the end
+  }
+
+  // ---- Progress forecast (mirrors ProgressForecast.swift) -------------------
+
+  function fmtShort(seconds) {
+    var t = Math.round(Math.abs(seconds));
+    if (t >= 3600) return Math.floor(t / 3600) + ":" + String(Math.floor((t % 3600) / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0");
+    return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0");
+  }
+
+  function forecast(plan, profile, cwi) {
+    var goal = profile.goal;
+    if (!goal || !(profile.testMeters > 0) || !(profile.testMinutes > 0) || !plan.weeks.length) return null;
+    var v = velocityFromTest(profile.testMeters, profile.testMinutes);
+    var t1 = profile.testMinutes * 60, d2 = goal.meters;
+    var start = t1 * Math.pow(d2 / profile.testMeters, RIEGEL);
+    var goalTime = goal.goalTimeSec || start * 0.95;
+    var neededGain = Math.max(0, Math.min(0.25, (start - goalTime) / start));
+    var weeks = plan.weeks.slice().sort(function (a, b) { return a.index - b.index; });
+    var totalPlanned = Math.max(1, weeks.reduce(function (a, w) { return a + weekPlannedMeters(w, v); }, 0));
+    var doneWeeks = weeks.filter(function (w) { return w.index <= cwi; });
+    var pastQs = doneWeeks.map(weekCompletion);
+    var assumedFutureQ = pastQs.length ? Math.max(0, pastQs.reduce(function (a, b) { return a + b; }, 0) / pastQs.length) : 1.0;
+
+    var pts = [], goalCum = 0, projCum = 0;
+    weeks.forEach(function (w) {
+      var weight = weekPlannedMeters(w, v) / totalPlanned;
+      var q = w.index <= cwi ? weekCompletion(w) : assumedFutureQ;
+      goalCum += neededGain * weight;
+      projCum += neededGain * weight * q;
+      pts.push({ week: w.index, goalSeconds: start * (1 - goalCum), projectedSeconds: start * (1 - projCum), isActual: w.index <= cwi });
+    });
+    var predictedFinish = pts.length ? pts[pts.length - 1].projectedSeconds : start;
+    var cur = pts.find(function (p) { return p.week === cwi; });
+    var onTrackDelta = predictedFinish - goalTime;
+    var doneTot = 0, doneDone = 0;
+    doneWeeks.forEach(function (w) { doneTot += w.workouts.length; doneDone += w.workouts.filter(function (x) { return x.completed; }).length; });
+    var isOnTrack = onTrackDelta <= 5;
+    var statusText = isOnTrack
+      ? (onTrackDelta < -5 ? "On track — " + fmtShort(Math.abs(onTrackDelta)) + " ahead of goal" : "On track for your goal")
+      : "Behind by " + fmtShort(Math.abs(onTrackDelta)) + " — more consistency needed";
+    return {
+      points: pts, startSeconds: start, goalSeconds: goalTime,
+      predictedFinishSeconds: predictedFinish,
+      currentPredictedSeconds: cur ? cur.projectedSeconds : predictedFinish,
+      onTrackDelta: onTrackDelta, isOnTrack: isOnTrack, statusText: statusText,
+      completionToDate: doneTot ? doneDone / doneTot : 0,
+      goalTitle: goal.title, currentWeek: cwi, raceWeek: weeks[weeks.length - 1].index,
+    };
+  }
+
+  // ---- Weekly / block review (mirrors ClaudeLink.swift) --------------------
+
+  function weeklyReview(week, velocity) {
+    var wos = week.workouts || [];
+    var planned = wos.reduce(function (a, w) { return a + workoutMeters(w, velocity); }, 0);
+    var actual = wos.filter(function (w) { return w.completed; }).reduce(function (a, w) { return a + workoutMeters(w, velocity); }, 0);
+    var total = wos.length, completed = wos.filter(function (w) { return w.completed; }).length;
+    var rpes = wos.map(function (w) { return w.rpe; }).filter(function (r) { return r > 0; });
+    var avg = rpes.length ? rpes.reduce(function (a, b) { return a + b; }, 0) / rpes.length : null;
+    var notes = wos.filter(function (w) { return w.note; }).map(function (w) { return w.title + ": " + w.note; });
+    return { index: week.index, phase: week.phase, plannedMeters: planned, actualMeters: actual, totalCount: total, completedCount: completed, averageRPE: avg, notes: notes, completionRate: total ? completed / total : 0 };
+  }
+  function blockReview(weeks, velocity) {
+    var rows = weeks.map(function (w) { return weeklyReview(w, velocity); });
+    var sum = function (f) { return rows.reduce(function (a, r) { return a + f(r); }, 0); };
+    var allRpe = [];
+    weeks.forEach(function (w) { (w.workouts || []).forEach(function (x) { if (x.rpe > 0) allRpe.push(x.rpe); }); });
+    var notes = [];
+    weeks.forEach(function (w) { (w.workouts || []).forEach(function (x) { if (x.note) notes.push("W" + w.index + " " + x.title + ": " + x.note); }); });
+    return {
+      rows: rows, weekCount: rows.length,
+      totalPlannedMeters: sum(function (r) { return r.plannedMeters; }),
+      totalActualMeters: sum(function (r) { return r.actualMeters; }),
+      totalSessions: sum(function (r) { return r.totalCount; }),
+      completedSessions: sum(function (r) { return r.completedCount; }),
+      averageRPE: allRpe.length ? allRpe.reduce(function (a, b) { return a + b; }, 0) / allRpe.length : null,
+      allNotes: notes,
+      completionRate: sum(function (r) { return r.totalCount; }) ? sum(function (r) { return r.completedCount; }) / sum(function (r) { return r.totalCount; }) : 0,
+    };
+  }
+
+  // ---- Claude hand-off prompts ---------------------------------------------
+
+  function claudeUrl(prompt) { return "https://claude.ai/new?q=" + encodeURIComponent(prompt); }
+
+  function planningPrompt(profile, plan) {
+    var v = velocityFromTest(profile.testMeters, profile.testMinutes);
+    var L = ["You are my running coach. Help me refine my training plan."];
+    if (v > 0) L.push("My VCR reference velocity is " + roundToTable(v).toFixed(1) + " m/s (100% pace " + fmtPace(referencePace(v)) + "/km).");
+    if (profile.goal) L.push("Goal: " + profile.goal.title + (profile.goal.dateISO ? " on " + new Date(profile.goal.dateISO).toDateString() : "") + (profile.goal.goalTimeSec ? ", target " + fmtHMS(profile.goal.goalTimeSec) : "") + ".");
+    L.push("I train " + profile.daysPerWeek + " days/week (1 long, 1 quality, rest easy).");
+    if (plan && plan.weeks[0]) {
+      L.push("This week:");
+      plan.weeks[0].workouts.forEach(function (w) { L.push("• " + w.title + ": " + w.detail); });
+    }
+    L.push("What would you adjust, and is my long-run progression sensible for the goal?");
+    return L.join("\n");
+  }
+  function weeklyReviewPrompt(week, velocity) {
+    var r = weeklyReview(week, velocity);
+    var L = ["You are my running coach. Review my training week and suggest next steps.",
+      "Week " + week.index + " (" + week.phase + "):",
+      "Planned " + Math.round(r.plannedMeters / 1000) + " km, completed " + r.completedCount + "/" + r.totalCount + " sessions, actual " + Math.round(r.actualMeters / 1000) + " km."];
+    if (r.averageRPE) L.push("Average RPE " + r.averageRPE.toFixed(1) + "/10.");
+    (week.workouts || []).forEach(function (w) {
+      var l = "• " + w.title + ": " + (w.completed ? "done" : "missed");
+      if (w.rpe) l += ", RPE " + w.rpe;
+      if (w.note) l += ' — "' + w.note + '"';
+      L.push(l);
+    });
+    L.push("Was the load about right? What should I change next week?");
+    return L.join("\n");
+  }
+  function blockReviewPrompt(weeks, velocity) {
+    var b = blockReview(weeks, velocity);
+    var L = ["You are my running coach. Review my last " + b.weekCount + " weeks of training as a block and tell me the trend.",
+      "Totals: planned " + Math.round(b.totalPlannedMeters / 1000) + " km, completed " + b.completedSessions + "/" + b.totalSessions + " sessions (" + Math.round(b.completionRate * 100) + "%), actual " + Math.round(b.totalActualMeters / 1000) + " km."];
+    if (b.averageRPE) L.push("Average RPE across the block: " + b.averageRPE.toFixed(1) + "/10.");
+    L.push("");
+    b.rows.forEach(function (r) {
+      var l = "Week " + r.index + " (" + r.phase + "): " + r.completedCount + "/" + r.totalCount + " done, " + Math.round(r.actualMeters / 1000) + " km";
+      if (r.averageRPE) l += ", RPE " + r.averageRPE.toFixed(1);
+      L.push(l);
+    });
+    if (b.allNotes.length) { L.push(""); L.push("Notes I logged:"); b.allNotes.slice(0, 20).forEach(function (n) { L.push("• " + n); }); }
+    L.push(""); L.push("Is my load trending up, flat, or down? Am I recovering well, and what should the next block focus on?");
+    return L.join("\n");
+  }
+
   const api = {
     velocityFromTest, roundToTable, paceFromVelocity, fmtPace, fmtPace400,
+    estimateMeters, workoutMeters, weekPlannedMeters, weekCompletion, currentWeekIndex,
+    forecast, fmtShort, weeklyReview, blockReview,
+    claudeUrl, planningPrompt, weeklyReviewPrompt, blockReviewPrompt,
     prescription, allPrescriptions, rangeText, referencePace, ZONES,
     riegelPredict, solveDTP, fmtHMS, RACE_PRESETS, isSpeedFocused, km,
     peakLongRunMeters, taperWeeks,
