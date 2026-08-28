@@ -7,6 +7,15 @@
 (function (root) {
   "use strict";
 
+  // ---- Display units (km default; mi optional) -----------------------------
+  var UNITS = "km";
+  function setUnits(u) { UNITS = (u === "mi") ? "mi" : "km"; }
+  function unitInfo() { return UNITS === "mi" ? { lab: "mi", m: 1609.344 } : { lab: "km", m: 1000 }; }
+  function unitLabel() { return unitInfo().lab; }
+  function toMeters(v) { return v * unitInfo().m; }        // value in current unit → metres
+  function fromMeters(m) { return m / unitInfo().m; }      // metres → value in current unit
+  function paceToPerKm(secPerUnit) { return secPerUnit * 1000 / unitInfo().m; }  // typed pace → sec/km
+
   // ---- Velocity & pace -----------------------------------------------------
 
   function velocityFromTest(meters, minutes) {
@@ -30,18 +39,15 @@
     return secPerKm + deltaSec;
   }
 
-  function fmtPace(secPerKm) {            // "m:ss" per km
-    if (!isFinite(secPerKm) || secPerKm <= 0) return "—:—";
-    const s = Math.round(secPerKm);
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return m + ":" + String(r).padStart(2, "0");
+  function fmtMMSS(sec) {
+    if (!isFinite(sec) || sec <= 0) return "—:—";
+    const s = Math.round(sec);
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
   }
-
-  function fmtPace400(secPerKm) {
-    if (!isFinite(secPerKm) || secPerKm <= 0) return "—:—";
-    return fmtPace(secPerKm * 0.4);
-  }
+  // Pace shown per the CURRENT display unit (km or mi).
+  function fmtPace(secPerKm) { return fmtMMSS(secPerKm * (unitInfo().m / 1000)); }
+  // 400 m split is always metric.
+  function fmtPace400(secPerKm) { return fmtMMSS(secPerKm * 0.4); }
 
   // ---- Zones ---------------------------------------------------------------
 
@@ -155,10 +161,10 @@
   }
   function distanceText(m) {
     if (m >= 1000) {
-      const k = m / 1000;
-      return (k === Math.round(k) ? String(k) : k.toFixed(1)) + " km";
+      const info = unitInfo(), v = m / info.m;
+      return (v === Math.round(v) ? String(v) : v.toFixed(1)) + " " + info.lab;
     }
-    return Math.round(m) + " m";
+    return Math.round(m) + " m";   // short reps stay metric
   }
   function stepDurationText(step) {
     if (step.durationType === "time") return timeText(step.durationValue);
@@ -181,7 +187,7 @@
     let t = stepDurationText(step);
     if (step.repeatCount > 1) t = step.repeatCount + " × " + t;
     const p = stepPaceText(step);
-    if (p) t += " @ " + p + " /km";
+    if (p) t += " @ " + p + " /" + unitLabel();
     return t;
   }
   function summarizeSteps(steps) {
@@ -441,10 +447,29 @@
   function weekPlannedMeters(week, velocity) {
     return (week.workouts || []).reduce(function (a, w) { return a + workoutMeters(w, velocity); }, 0);
   }
-  function weekCompletion(week) {
-    var total = (week.workouts || []).length;
-    if (!total) return 0;
-    return week.workouts.filter(function (w) { return w.completed; }).length / total;
+  // How "done" a single session is: if the athlete typed an actual distance,
+  // use actual ÷ planned (capped at 1); otherwise the Completed tick = 1/0.
+  function sessionCompletion(w, velocity) {
+    var planned = workoutMeters(w, velocity);
+    if (w.actualMeters > 0 && planned > 0) return Math.min(1, w.actualMeters / planned);
+    return w.completed ? 1 : 0;
+  }
+  function weekCompletion(week, velocity) {
+    var wos = week.workouts || [];
+    if (!wos.length) return 0;
+    return wos.reduce(function (a, w) { return a + sessionCompletion(w, velocity); }, 0) / wos.length;
+  }
+
+  // Build a fresh session of any kind, paces from the athlete's VCR velocity.
+  const SESSION_KINDS = [
+    { k: "intervals", t: "Intervals" }, { k: "tempo", t: "Tempo Run" }, { k: "cruiseIntervals", t: "Cruise Intervals" },
+    { k: "fartlek", t: "Fartlek" }, { k: "progression", t: "Progression" }, { k: "hills", t: "Hill Reps" },
+    { k: "stridesEasy", t: "Easy + Strides" }, { k: "easy", t: "Easy Run" }, { k: "long", t: "Long Run" },
+  ];
+  function buildWorkoutOfKind(kind, phase, velocity, goal, plannedMeters) {
+    if (kind === "easy") return easyWorkout(40, velocity, null, "enduranceEasy");
+    if (kind === "long") return longRunWorkout(plannedMeters > 3000 ? plannedMeters : 12000, velocity, goal);
+    return qualityWorkout(kind, phase || "build", velocity);
   }
 
   // ---- Which week is "now" --------------------------------------------------
@@ -480,13 +505,13 @@
     var weeks = plan.weeks.slice().sort(function (a, b) { return a.index - b.index; });
     var totalPlanned = Math.max(1, weeks.reduce(function (a, w) { return a + weekPlannedMeters(w, v); }, 0));
     var doneWeeks = weeks.filter(function (w) { return w.index <= cwi; });
-    var pastQs = doneWeeks.map(weekCompletion);
+    var pastQs = doneWeeks.map(function (w) { return weekCompletion(w, v); });
     var assumedFutureQ = pastQs.length ? Math.max(0, pastQs.reduce(function (a, b) { return a + b; }, 0) / pastQs.length) : 1.0;
 
     var pts = [], goalCum = 0, projCum = 0;
     weeks.forEach(function (w) {
       var weight = weekPlannedMeters(w, v) / totalPlanned;
-      var q = w.index <= cwi ? weekCompletion(w) : assumedFutureQ;
+      var q = w.index <= cwi ? weekCompletion(w, v) : assumedFutureQ;
       goalCum += neededGain * weight;
       projCum += neededGain * weight * q;
       pts.push({ week: w.index, goalSeconds: start * (1 - goalCum), projectedSeconds: start * (1 - projCum), isActual: w.index <= cwi });
@@ -515,12 +540,20 @@
   function weeklyReview(week, velocity) {
     var wos = week.workouts || [];
     var planned = wos.reduce(function (a, w) { return a + workoutMeters(w, velocity); }, 0);
-    var actual = wos.filter(function (w) { return w.completed; }).reduce(function (a, w) { return a + workoutMeters(w, velocity); }, 0);
-    var total = wos.length, completed = wos.filter(function (w) { return w.completed; }).length;
+    // Real logged distance when typed, else planned distance for ticked sessions.
+    var actual = wos.reduce(function (a, w) {
+      if (w.actualMeters > 0) return a + w.actualMeters;
+      return a + (w.completed ? workoutMeters(w, velocity) : 0);
+    }, 0);
+    var total = wos.length, completed = wos.filter(function (w) { return w.completed || w.actualMeters > 0; }).length;
     var rpes = wos.map(function (w) { return w.rpe; }).filter(function (r) { return r > 0; });
     var avg = rpes.length ? rpes.reduce(function (a, b) { return a + b; }, 0) / rpes.length : null;
+    // Average actual pace from sessions where both distance + time were typed.
+    var pSec = 0, pKm = 0;
+    wos.forEach(function (w) { if (w.actualMeters > 0 && w.actualSeconds > 0) { pSec += w.actualSeconds; pKm += w.actualMeters / 1000; } });
+    var avgPace = pKm > 0 ? pSec / pKm : null;
     var notes = wos.filter(function (w) { return w.note; }).map(function (w) { return w.title + ": " + w.note; });
-    return { index: week.index, phase: week.phase, plannedMeters: planned, actualMeters: actual, totalCount: total, completedCount: completed, averageRPE: avg, notes: notes, completionRate: total ? completed / total : 0 };
+    return { index: week.index, phase: week.phase, plannedMeters: planned, actualMeters: actual, totalCount: total, completedCount: completed, averageRPE: avg, averagePace: avgPace, notes: notes, completionRate: total ? completed / total : 0 };
   }
   function blockReview(weeks, velocity) {
     var rows = weeks.map(function (w) { return weeklyReview(w, velocity); });
@@ -590,8 +623,10 @@
   }
 
   const api = {
+    setUnits, unitLabel, unitInfo, toMeters, fromMeters, paceToPerKm, fmtMMSS,
     velocityFromTest, roundToTable, paceFromVelocity, fmtPace, fmtPace400,
-    estimateMeters, workoutMeters, weekPlannedMeters, weekCompletion, currentWeekIndex,
+    estimateMeters, workoutMeters, weekPlannedMeters, weekCompletion, sessionCompletion, currentWeekIndex,
+    buildWorkoutOfKind, SESSION_KINDS,
     forecast, fmtShort, weeklyReview, blockReview,
     claudeUrl, planningPrompt, weeklyReviewPrompt, blockReviewPrompt,
     prescription, allPrescriptions, rangeText, referencePace, ZONES,

@@ -10,7 +10,7 @@
   var state = {
     mode: CONFIGURED ? "cloud" : "local",
     user: null, isMember: false, isAdmin: false,
-    data: null, tab: "plan", authMode: "signin",
+    data: null, tab: "today", authMode: "signin",
     detail: null,            // {id, weekIndex}
     dwo: null,               // working clone of the open workout
     editing: false,
@@ -38,6 +38,32 @@
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function rid(p) { return p + Math.random().toString(36).slice(2, 9); }
+  function isoDate(d) { var x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); }
+  function currentKind(w) { return w.kind || (w.type === "easy" ? "easy" : (w.type === "longRun" ? "long" : "")); }
+  function ul() { return E.unitLabel(); }
+  // pace per km from an actual (metres, seconds) pair — fmtPace then shows it in the display unit
+  function actualPaceKm(w) { return w.actualSeconds / (w.actualMeters / 1000); }
+  function downloadFile(name, text, mime) {
+    var blob = new Blob([text], { type: mime || "text/plain" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 500);
+  }
+  function icsDate(iso) { var d = new Date(iso); return d.getUTCFullYear() + String(d.getUTCMonth() + 1).padStart(2, "0") + String(d.getUTCDate()).padStart(2, "0"); }
+  function buildICS(plan, name) {
+    var L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Widestrides//EN", "CALSCALE:GREGORIAN"];
+    (plan.weeks || []).forEach(function (wk) {
+      (wk.workouts || []).forEach(function (w) {
+        var start = icsDate(w.dateISO), end = icsDate(new Date(new Date(w.dateISO).getTime() + 86400000));
+        var summary = "🏃 " + (w.title || "Run");
+        var desc = (w.steps && w.steps.length ? E.summarizeSteps(w.steps) : (w.detail || "")).replace(/\n/g, " ").replace(/,/g, "\\,");
+        L.push("BEGIN:VEVENT", "UID:" + (w.id || rid("w-")) + "@widestrides", "DTSTART;VALUE=DATE:" + start, "DTEND;VALUE=DATE:" + end,
+          "SUMMARY:" + summary.replace(/,/g, "\\,"), "DESCRIPTION:" + desc, "END:VEVENT");
+      });
+    });
+    L.push("END:VCALENDAR");
+    return L.join("\r\n");
+  }
   function parsePace(s) { var m = /^(\d+):(\d{1,2})$/.exec((s || "").trim()); return m ? (+m[1]) * 60 + (+m[2]) : NaN; }
   function parseTime(s) {
     s = (s || "").trim(); if (!s) return NaN; var p = s.split(":").map(Number);
@@ -95,6 +121,7 @@
     if (d.testMeters && !d.testHistory) { d.testHistory = [{ id: rid("t-"), meters: d.testMeters, minutes: d.testMinutes, dateISO: d.startISO || new Date().toISOString() }]; dirty = true; }
     if (d.plan && ensureIds(d.plan)) dirty = true;
     if (dirty) await saveData();
+    E.setUnits(d.units || "km");
     applyTheme();
   }
 
@@ -180,7 +207,7 @@
 
   // ============================================================ main shell
   function renderMain() {
-    var tabs = [["plan", "Plan"], ["paces", "Paces"], ["progress", "Progress"], ["calc", "Calculator"], ["settings", "Settings"]];
+    var tabs = [["today", "Today"], ["plan", "Plan"], ["paces", "Paces"], ["progress", "Progress"], ["calc", "Calculator"], ["settings", "Settings"]];
     if (state.isAdmin) tabs.push(["admin", "Admin"]);
     if (state.mode === "cloud") tabs.push(["account", "Account"]);
     $app.innerHTML = "";
@@ -195,7 +222,8 @@
 
     var body = h('<div id="body"></div>'); $app.appendChild(body);
     if (state.coach) { renderCoach(body); if (state.detail && state.dwo) $app.appendChild(buildSheet()); return; }
-    if (state.tab === "plan") renderPlan(body);
+    if (state.tab === "today") renderToday(body);
+    else if (state.tab === "plan") renderPlan(body);
     else if (state.tab === "paces") renderPaces(body);
     else if (state.tab === "progress") renderProgress(body);
     else if (state.tab === "calc") renderCalc(body);
@@ -253,6 +281,52 @@
     return o + '<option value="custom">Custom distance…</option>';
   }
 
+  // ============================================================ today tab
+  function renderToday(body) {
+    if (!hasProfile() || !state.data.plan) { renderSetup(body); return; }
+    var plan = state.data.plan, all = [];
+    plan.weeks.forEach(function (wk) { wk.workouts.forEach(function (w) { all.push({ w: w, wkIndex: wk.index }); }); });
+    var todayStr = new Date().toDateString();
+    var todays = all.filter(function (x) { return new Date(x.w.dateISO).toDateString() === todayStr; });
+    var now = new Date(); now.setHours(0, 0, 0, 0);
+    var next = all.filter(function (x) { return !x.w.completed && new Date(x.w.dateISO) >= now; }).sort(function (a, b) { return new Date(a.w.dateISO) - new Date(b.w.dateISO); })[0];
+
+    var hi = state.data.name ? "Hi " + esc(state.data.name) + " 👋" : "Today 👋";
+    body.appendChild(h('<header class="top" style="padding-bottom:4px"><h1>' + hi + '</h1></header>'));
+
+    var pick = todays[0] || (next && next.w);
+    if (todays.length) {
+      body.appendChild(h('<p class="muted small" style="margin:0 0 10px">Today · ' + new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" }) + '</p>'));
+      todays.forEach(function (x) { body.appendChild(todayCard(x.w, "TODAY")); });
+    } else if (next) {
+      body.appendChild(h('<p class="muted small" style="margin:0 0 10px">Nothing scheduled today. Next up:</p>'));
+      body.appendChild(todayCard(next.w, dayLabel(next.w.dateISO)));
+    } else {
+      body.appendChild(h('<div class="card muted">All sessions done — nice work! 🎉</div>'));
+    }
+
+    // this-week progress
+    var cwi = E.currentWeekIndex(plan);
+    var wk = plan.weeks.find(function (x) { return x.index === cwi; });
+    if (wk) {
+      var done = wk.workouts.filter(function (w) { return w.completed || w.actualMeters > 0; }).length, tot = wk.workouts.length;
+      var pct = tot ? Math.round(done / tot * 100) : 0;
+      var pc = h('<div class="card"><div class="row spread"><b>This week (Week ' + cwi + ')</b><span class="muted small">' + done + '/' + tot + ' done</span></div>' +
+        '<div style="height:10px;background:var(--line);border-radius:999px;overflow:hidden;margin-top:8px"><div style="height:100%;width:' + pct + '%;background:var(--accent)"></div></div></div>');
+      var go = h('<a class="link small">See full progress →</a>'); go.onclick = function () { state.tab = "progress"; renderMain(); };
+      pc.appendChild(go); body.appendChild(pc);
+    }
+  }
+  function todayCard(w, tag) {
+    var b = BADGE[w.type] || ["", "var(--muted)"];
+    var card = h('<div class="card"><div class="wo-top" style="margin-bottom:6px"><span class="badge" style="background:' + b[1] + '">' + b[0] + '</span><b style="font-size:17px">' + esc(w.title) + '</b><span class="wo-day">' + tag + '</span></div>' +
+      '<div class="muted" style="font-size:14px">' + esc(w.steps && w.steps.length ? E.summarizeSteps(w.steps) : w.detail) + '</div>' +
+      (w.coachNote ? '<div class="note-line" style="color:var(--accent);margin-top:6px">🧑‍🏫 ' + esc(w.coachNote) + '</div>' : "") + '</div>');
+    var open = h('<button class="btn" style="margin-top:12px">Open & log</button>'); open.onclick = function () { openDetail(w.id); };
+    card.appendChild(open);
+    return card;
+  }
+
   // ============================================================ plan tab
   function renderPlan(body) {
     if (!hasProfile() || !state.data.plan) { renderSetup(body); return; }
@@ -270,7 +344,8 @@
           '<span>' + (w.completed ? "✓ " : "") + esc(w.title) + '</span>' +
           (w.isCustomized ? '<span class="badge-edit"> ·edited</span>' : "") +
           '<span class="wo-day">' + dayLabel(w.dateISO) + '</span></div>' +
-          '<div class="wo-detail">' + esc(w.detail) + '</div>' +
+          '<div class="wo-detail">' + esc(w.steps && w.steps.length ? E.summarizeSteps(w.steps) : w.detail) + '</div>' +
+          (w.actualMeters > 0 ? '<div class="note-line" style="color:var(--easy)">🏃 ' + E.fromMeters(w.actualMeters).toFixed(2).replace(/\.?0+$/, "") + ' ' + ul() + (w.actualSeconds > 0 ? ' · ' + E.fmtPace(actualPaceKm(w)) + '/' + ul() : "") + '</div>' : "") +
           (w.coachNote ? '<div class="note-line" style="color:var(--accent)">🧑‍🏫 ' + esc(w.coachNote) + '</div>' : "") +
           (w.note ? '<div class="note-line">📝 ' + esc(w.note) + '</div>' : "") + '</div>');
         wo.onclick = function () { openDetail(w.id); };
@@ -309,7 +384,19 @@
     var head = h('<div class="sheet-head"><h2 style="margin:0">' + esc(w.title) + '</h2><button class="x">×</button></div>');
     head.querySelector(".x").onclick = closeDetail;
     sheet.appendChild(head);
-    sheet.appendChild(h('<div class="muted small">' + dayLabel(w.dateISO) + (w.isCustomized ? ' · <span class="badge-edit">edited</span>' : "") + '</div>'));
+    if (w.isCustomized) sheet.appendChild(h('<div class="muted small"><span class="badge-edit">edited</span></div>'));
+    // move the session to another day within its week
+    var wkForDate = activeData().plan ? activeData().plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; }) : null;
+    if (wkForDate && w.type !== "race") {
+      var ws = new Date(wkForDate.startISO), we = new Date(ws); we.setDate(we.getDate() + 6);
+      var dateRow = h('<div class="toggle-row"><span class="small">Date (within week)</span><input type="date" style="width:auto" /></div>');
+      var di = dateRow.querySelector("input");
+      di.min = isoDate(ws); di.max = isoDate(we); di.value = isoDate(new Date(w.dateISO));
+      di.onchange = function () { if (di.value) { w.dateISO = new Date(di.value + "T12:00:00").toISOString(); drawSheet(sheet); } };
+      sheet.appendChild(dateRow);
+    } else {
+      sheet.appendChild(h('<div class="muted small">' + dayLabel(w.dateISO) + '</div>'));
+    }
     sheet.appendChild(h('<p style="margin:8px 0 0">' + esc(E.summarizeSteps(w.steps || []) || w.detail) + '</p>'));
 
     // ----- steps: view or edit -----
@@ -326,6 +413,13 @@
       hd.appendChild(tog); sec.appendChild(hd);
 
       if (state.editing) {
+        var typeRow = h('<div class="step-edit"><div class="grow"><div class="t">Session type</div><div class="s">swap the workout — paces stay from the VCR</div></div></div>');
+        var tsel = h('<select style="width:auto;max-width:150px"></select>');
+        E.SESSION_KINDS.forEach(function (o) { tsel.appendChild(h('<option value="' + o.k + '">' + o.t + '</option>')); });
+        tsel.value = currentKind(w);
+        tsel.onchange = function () { changeType(w, tsel.value); drawSheet(sheet); };
+        typeRow.appendChild(tsel);
+        sec.appendChild(typeRow);
         if (state.repeatRefs.length) {
           var srow = h('<div class="step-edit"><div class="grow"><div class="t">Sets (repeats)</div><div class="s">applies to every repeated block</div></div></div>');
           srow.appendChild(mkBtn("–", function () { setSets(state.sets - 1); drawSheet(sheet); }));
@@ -359,7 +453,7 @@
         w.steps.forEach(function (s) {
           var sub = E.stepDurationText(s); if (E.isRecovery(s)) sub += " · " + (E.recoveryIsJog(s) ? "jog" : "standing rest");
           var pace = E.stepPaceText(s);
-          sec.appendChild(h('<div class="step"><div><div>' + (s.repeatCount > 1 ? s.repeatCount + "× " : "") + esc(s.label) + '</div><div class="st-sub">' + sub + '</div></div>' + (pace ? '<div class="st-pace mono">' + pace + ' /km</div>' : "") + '</div>'));
+          sec.appendChild(h('<div class="step"><div><div>' + (s.repeatCount > 1 ? s.repeatCount + "× " : "") + esc(s.label) + '</div><div class="st-sub">' + sub + '</div></div>' + (pace ? '<div class="st-pace mono">' + pace + ' /' + ul() + '</div>' : "") + '</div>'));
         });
       }
       sheet.appendChild(sec);
@@ -378,14 +472,22 @@
 
     // ----- log -----
     if (coach) {
+      var ap = (w.actualMeters > 0) ? E.fromMeters(w.actualMeters).toFixed(2).replace(/\.?0+$/, "") + " " + ul() + (w.actualSeconds > 0 ? " in " + E.fmtHMS(w.actualSeconds) + " (" + E.fmtPace(actualPaceKm(w)) + "/" + ul() + ")" : "") : "";
       sheet.appendChild(h('<div class="sec"><h4>Athlete log</h4><div class="small muted">' +
-        (w.completed ? "✓ Completed" : "Not completed yet") + (w.rpe ? " · RPE " + w.rpe + "/10" : "") + '</div>' +
+        (w.completed || w.actualMeters > 0 ? "✓ Completed" : "Not completed yet") + (w.rpe ? " · RPE " + w.rpe + "/10" : "") + '</div>' +
+        (ap ? '<div class="small" style="margin-top:4px">🏃 ' + ap + '</div>' : "") +
         (w.note ? '<div class="note-line">📝 ' + esc(w.note) + '</div>' : "") + '</div>'));
     } else {
       var log = h('<div class="sec"><h4>Log this session</h4></div>');
       var chk = h('<label class="chk"><input type="checkbox" ' + (w.completed ? "checked" : "") + ' /> Completed</label>');
       chk.querySelector("input").onchange = function (e) { w.completed = e.target.checked; };
       log.appendChild(chk);
+      // actual run — typed by the athlete, feeds Progress accurately
+      var act = h('<div style="margin-top:10px"><label class="field">Actual run (optional — makes Progress accurate)</label>' +
+        '<div class="grid2"><input id="act-km" inputmode="decimal" placeholder="distance ' + ul() + '" value="' + (w.actualMeters > 0 ? E.fromMeters(w.actualMeters).toFixed(2).replace(/\.?0+$/, "") : "") + '" />' +
+        '<input id="act-t" placeholder="time h:mm:ss" value="' + (w.actualSeconds > 0 ? E.fmtHMS(w.actualSeconds) : "") + '" /></div>' +
+        '<div class="small muted" id="act-pace" style="margin-top:4px"></div></div>');
+      log.appendChild(act);
       var rpe = h('<div style="margin-top:10px"><div class="row spread"><span class="small">Effort (RPE)</span><span class="small mono" id="rpev">' + (w.rpe || "—") + ' / 10</span></div><input type="range" min="1" max="10" step="1" value="' + (w.rpe || 5) + '" /></div>');
       rpe.querySelector("input").oninput = function (e) { w.rpe = parseInt(e.target.value, 10); document.getElementById("rpev").textContent = w.rpe + " / 10"; };
       log.appendChild(rpe);
@@ -393,6 +495,15 @@
       note.querySelector("textarea").oninput = function (e) { w.note = e.target.value; };
       log.appendChild(note);
       sheet.appendChild(log);
+      var km = log.querySelector("#act-km"), tm = log.querySelector("#act-t"), pv = log.querySelector("#act-pace");
+      function syncActual() {
+        var k = parseFloat(km.value), s = parseTime(tm.value);
+        w.actualMeters = k > 0 ? E.toMeters(k) : undefined;
+        w.actualSeconds = isFinite(s) && s > 0 ? s : undefined;
+        if (w.actualMeters && w.actualSeconds) { pv.textContent = "= " + E.fmtPace(actualPaceKm(w)) + " /" + ul(); if (!w.completed) { w.completed = true; chk.querySelector("input").checked = true; } }
+        else pv.textContent = "";
+      }
+      km.oninput = syncActual; tm.oninput = syncActual; syncActual();
     }
 
     var save = h('<button class="btn" style="margin-top:18px">' + (coach ? "Save changes for athlete" : "Save") + '</button>');
@@ -402,7 +513,7 @@
   function mkBtn(txt, fn) { var b = h('<button class="stepbtn">' + txt + '</button>'); b.onclick = fn; return b; }
   function editSub(s) {
     var t = E.stepDurationText(s);
-    var p = E.stepPaceText(s); if (p) t += " @ " + p + " /km";
+    var p = E.stepPaceText(s); if (p) t += " @ " + p + " /" + ul();
     return t;
   }
   function setSets(n) { n = Math.max(1, Math.min(30, n)); state.sets = n; state.repeatRefs.forEach(function (s) { s.repeatCount = n; }); state.dwo.isCustomized = true; }
@@ -431,11 +542,28 @@
       w.isCustomized = false; // for long/easy just clear the flag
     }
   }
+  // Swap a session for a completely different kind (interval → tempo → easy…),
+  // paces regenerated from the athlete's VCR. Keeps date/id/logs/coach note.
+  function changeType(w, kind) {
+    var d = activeData();
+    var v = E.velocityFromTest(d.testMeters, d.testMinutes);
+    var wk = d.plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; }) || {};
+    var fresh = E.buildWorkoutOfKind(kind, wk.phase, v, d.goal || null, w.plannedMeters);
+    fresh.steps.forEach(function (s) { s.id = rid("s-"); });
+    w.type = fresh.type; w.title = fresh.title; w.zone = fresh.zone; w.kind = kind;
+    w.steps = fresh.steps; w.detail = fresh.detail;
+    w.plannedMeters = fresh.plannedMeters || E.estimateMeters(fresh.steps, v);
+    w.isCustomized = true;
+    state.repeatRefs = w.steps.filter(function (s) { return s.repeatCount > 1; });
+    state.sets = state.repeatRefs.reduce(function (m, s) { return Math.max(m, s.repeatCount); }, 1);
+  }
+
   async function commitWorkout(w) {
     var wk = activeData().plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; });
     if (!wk) return;
     var idx = wk.workouts.findIndex(function (x) { return x.id === w.id; });
     if (idx >= 0) wk.workouts[idx] = w;
+    wk.workouts.sort(function (a, b) { return new Date(a.dateISO) - new Date(b.dateISO); });
     await saveActive();
   }
 
@@ -443,9 +571,9 @@
   function renderPaces(body) {
     if (!hasProfile()) { body.appendChild(h('<div class="card muted">Set up your test first (Plan tab).</div>')); return; }
     var v = E.velocityFromTest(state.data.testMeters, state.data.testMinutes);
-    var card = h('<div class="card"><h2>Your training paces</h2><p class="muted small">Reference (100%) pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + ' /km</b> · from ' + state.data.testMeters + ' m in ' + state.data.testMinutes + ' min</p></div>');
+    var card = h('<div class="card"><h2>Your training paces</h2><p class="muted small">Reference (100%) pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + ' /' + ul() + '</b> · from ' + state.data.testMeters + ' m in ' + state.data.testMinutes + ' min</p></div>');
     E.allPrescriptions(v).forEach(function (rx) {
-      card.appendChild(h('<div class="zone"><span class="dot" style="background:' + (DOT[rx.zone] || "var(--muted)") + '"></span><div><div class="z-title">' + rx.title + '</div>' + (rx.hr ? '<div class="z-hr">~' + rx.hr + ' bpm</div>' : "") + '</div><div class="z-pace mono">' + E.rangeText(rx) + '<div class="z-hr">/km</div></div></div>'));
+      card.appendChild(h('<div class="zone"><span class="dot" style="background:' + (DOT[rx.zone] || "var(--muted)") + '"></span><div><div class="z-title">' + rx.title + '</div>' + (rx.hr ? '<div class="z-hr">~' + rx.hr + ' bpm</div>' : "") + '</div><div class="z-pace mono">' + E.rangeText(rx) + '<div class="z-hr">/' + ul() + '</div></div></div>'));
     });
     body.appendChild(card);
   }
@@ -453,31 +581,33 @@
   // ============================================================ calculator tab
   function renderCalc(body) {
     body.appendChild(h('<div class="card"><h2>Distance · Time · Pace</h2><p class="muted small">Fill in any two, leave the third blank, press Calculate.</p>' +
-      '<div class="grid3"><div><label class="field">Distance (km)</label><input id="c-d" inputmode="decimal" placeholder="10" /></div>' +
+      '<div class="grid3"><div><label class="field">Distance (' + ul() + ')</label><input id="c-d" inputmode="decimal" placeholder="10" /></div>' +
       '<div><label class="field">Time (h:mm:ss)</label><input id="c-t" placeholder="45:00" /></div>' +
-      '<div><label class="field">Pace (/km)</label><input id="c-p" placeholder="4:30" /></div></div>' +
+      '<div><label class="field">Pace (/' + ul() + ')</label><input id="c-p" placeholder="4:30" /></div></div>' +
       '<button class="btn" id="calc">Calculate</button><div id="cout" class="small" style="margin-top:14px"></div></div>'));
     document.getElementById("calc").onclick = function () {
-      var dKm = parseFloat(document.getElementById("c-d").value), t = parseTime(document.getElementById("c-t").value), p = parsePace(document.getElementById("c-p").value);
-      var r = E.solveDTP({ distanceM: dKm > 0 ? dKm * 1000 : undefined, timeSec: isFinite(t) ? t : undefined, paceSecPerKm: isFinite(p) ? p : undefined });
+      var dv = parseFloat(document.getElementById("c-d").value), t = parseTime(document.getElementById("c-t").value), p = parsePace(document.getElementById("c-p").value);
+      var r = E.solveDTP({ distanceM: dv > 0 ? E.toMeters(dv) : undefined, timeSec: isFinite(t) ? t : undefined, paceSecPerKm: isFinite(p) ? E.paceToPerKm(p) : undefined });
       var out = document.getElementById("cout");
       if (!r) { out.className = "err"; out.textContent = "Enter at least two values."; return; }
       out.className = "";
-      document.getElementById("c-d").value = (r.distanceM / 1000).toFixed(2).replace(/\.?0+$/, "");
+      var dvo = E.fromMeters(r.distanceM).toFixed(2).replace(/\.?0+$/, "");
+      document.getElementById("c-d").value = dvo;
       document.getElementById("c-t").value = E.fmtHMS(r.timeSec);
       document.getElementById("c-p").value = E.fmtPace(r.paceSecPerKm);
-      out.innerHTML = '<b>' + (r.distanceM / 1000).toFixed(2).replace(/\.?0+$/, "") + ' km</b> in <b>' + E.fmtHMS(r.timeSec) + '</b> = <b>' + E.fmtPace(r.paceSecPerKm) + ' /km</b>';
+      out.innerHTML = '<b>' + dvo + ' ' + ul() + '</b> in <b>' + E.fmtHMS(r.timeSec) + '</b> = <b>' + E.fmtPace(r.paceSecPerKm) + ' /' + ul() + '</b>';
     };
     var pred = h('<div class="card"><h2>Race predictions (Riegel)</h2><p class="muted small">From a recent race or hard effort — distance + time.</p>' +
-      '<div class="grid2"><div><label class="field">From distance (km)</label><input id="r-d" inputmode="decimal" placeholder="10" /></div><div><label class="field">In time</label><input id="r-t" placeholder="45:00" /></div></div>' +
+      '<div class="grid2"><div><label class="field">From distance (' + ul() + ')</label><input id="r-d" inputmode="decimal" placeholder="10" /></div><div><label class="field">In time</label><input id="r-t" placeholder="45:00" /></div></div>' +
       '<button class="btn" id="predict">Predict</button><div id="rout" style="margin-top:12px"></div></div>');
     body.appendChild(pred);
     document.getElementById("predict").onclick = function () {
-      var d = parseFloat(document.getElementById("r-d").value), t = parseTime(document.getElementById("r-t").value), out = document.getElementById("rout");
-      if (!(d > 0) || !isFinite(t)) { out.className = "err small"; out.textContent = "Enter distance and time."; return; }
-      out.className = ""; out.innerHTML = E.RACE_PRESETS.map(function (p) { var tt = E.riegelPredict(t, d * 1000, p.meters); return '<div class="zone"><div class="z-title">' + p.title + '</div><div class="z-pace mono">' + E.fmtHMS(tt) + '<div class="z-hr">' + E.fmtPace(tt / (p.meters / 1000)) + ' /km</div></div></div>'; }).join("");
+      var dv = parseFloat(document.getElementById("r-d").value), t = parseTime(document.getElementById("r-t").value), out = document.getElementById("rout");
+      if (!(dv > 0) || !isFinite(t)) { out.className = "err small"; out.textContent = "Enter distance and time."; return; }
+      var d1 = E.toMeters(dv);
+      out.className = ""; out.innerHTML = E.RACE_PRESETS.map(function (p) { var tt = E.riegelPredict(t, d1, p.meters); return '<div class="zone"><div class="z-title">' + p.title + '</div><div class="z-pace mono">' + E.fmtHMS(tt) + '<div class="z-hr">' + E.fmtPace(tt / (p.meters / 1000)) + ' /' + ul() + '</div></div></div>'; }).join("");
     };
-    if (hasProfile()) { document.getElementById("r-d").value = (state.data.testMeters / 1000).toFixed(2).replace(/\.?0+$/, ""); document.getElementById("r-t").value = E.fmtHMS(state.data.testMinutes * 60); }
+    if (hasProfile()) { document.getElementById("r-d").value = E.fromMeters(state.data.testMeters).toFixed(2).replace(/\.?0+$/, ""); document.getElementById("r-t").value = E.fmtHMS(state.data.testMinutes * 60); }
   }
 
   // ============================================================ account tab
@@ -503,6 +633,8 @@
 
   // ============================================================ admin tab
   function renderAdmin(body) {
+    body.appendChild(h('<div class="card"><h2>Coach dashboard</h2><p class="muted small">Everyone you coach at a glance — tap a row to open their plan.</p><div id="dash" class="muted small">Loading…</div></div>'));
+    loadDashboard();
     body.appendChild(h('<div class="card"><h2>Invite codes</h2><p class="muted small">Generate a code and share it. Each works once.</p>' +
       '<div class="grid2"><div><label class="field">Note (who is it for?)</label><input id="a-note" placeholder="e.g. John from run club" /></div>' +
       '<div style="display:flex;align-items:flex-end"><button class="btn" id="a-gen" style="margin-top:0">Generate code</button></div></div>' +
@@ -548,6 +680,30 @@
     });
   }
   function rand4() { var s = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", o = ""; for (var i = 0; i < 4; i++) o += s[Math.floor(Math.random() * s.length)]; return o; }
+  async function loadDashboard() {
+    var box = document.getElementById("dash");
+    var mem = await sb.from("members").select("user_id,email");
+    if (mem.error) { box.className = "err"; box.textContent = mem.error.message; return; }
+    var prof = await sb.from("profiles").select("user_id,data");
+    var pmap = {}; (prof.data || []).forEach(function (p) { pmap[p.user_id] = p.data || {}; });
+    var rows = (mem.data || []).map(function (m) {
+      var d = pmap[m.user_id] || {}, r = { email: m.email, uid: m.user_id, order: 3, status: "no setup", cls: "off", sub: "" };
+      if (d.testMeters && d.plan) {
+        var cwi = E.currentWeekIndex(d.plan), wk = d.plan.weeks.find(function (x) { return x.index === cwi; });
+        var done = wk ? wk.workouts.filter(function (w) { return w.completed || w.actualMeters > 0; }).length : 0, tot = wk ? wk.workouts.length : 0;
+        r.sub = "Wk " + cwi + " · " + done + "/" + tot + " done" + (d.goal ? " · " + d.goal.title : "");
+        if (d.goal) { var f = E.forecast(d.plan, d, cwi); if (f) { r.status = f.isOnTrack ? "on track" : "behind"; r.cls = f.isOnTrack ? "free" : "used"; r.order = f.isOnTrack ? 2 : 0; } }
+        else { r.status = "no goal"; r.order = 1; }
+      } else if (d.testMeters) { r.sub = "No plan yet"; r.order = 1; }
+      return r;
+    }).sort(function (a, b) { return a.order - b.order; });
+    box.className = "";
+    if (!rows.length) { box.textContent = "No members yet."; return; }
+    box.innerHTML = '<table class="codes"><tr><th>Athlete</th><th>Status</th></tr>' + rows.map(function (r) {
+      return '<tr data-uid="' + r.uid + '" data-email="' + esc(r.email || "") + '" style="cursor:pointer"><td>' + esc(r.email || "") + '<div class="muted small">' + esc(r.sub) + '</div></td><td><span class="pill ' + r.cls + '">' + r.status + '</span></td></tr>';
+    }).join("") + '</table>';
+    Array.prototype.forEach.call(box.querySelectorAll("[data-uid]"), function (tr) { tr.onclick = function () { openCoach(tr.getAttribute("data-uid"), tr.getAttribute("data-email")); }; });
+  }
 
   // ============================================================ progress tab
   function renderProgress(body) {
@@ -572,6 +728,16 @@
       body.appendChild(h('<div class="card muted small">Add a goal race (Settings) with a target time to see your goal-vs-projected forecast. Below is your week-by-week review.</div>'));
     }
 
+    // ---- actual vs target pace trend ----
+    var trend = plan.weeks.filter(function (w) { return w.index <= cwi; }).map(function (w) { return E.weeklyReview(w, v); }).filter(function (r) { return r.averagePace > 0; });
+    if (trend.length >= 1) {
+      var target = (state.data.goal && state.data.goal.goalTimeSec) ? state.data.goal.goalTimeSec / (state.data.goal.meters / 1000) : E.prescription("threshold", v).pace;
+      var pc = h('<div class="card"><h2>Actual pace trend</h2><p class="muted small">Your average logged pace each week vs your target.</p></div>');
+      pc.appendChild(paceChart(trend, target));
+      pc.appendChild(h('<div class="row small muted" style="gap:16px;margin-top:4px"><span><span style="color:var(--accent)">■</span> Actual</span><span>┈ Target ' + E.fmtPace(target) + '/' + ul() + '</span><span style="margin-left:auto">↑ faster</span></div>'));
+      body.appendChild(pc);
+    }
+
     // ---- reviews ----
     var rev = h('<div class="card"><h2>Weekly review</h2><label class="field">Week</label></div>');
     var sel = h('<select></select>');
@@ -582,7 +748,8 @@
     function drawWR() {
       var wk = plan.weeks.find(function (x) { return x.index === parseInt(sel.value, 10); });
       var r = E.weeklyReview(wk, v);
-      out.innerHTML = '<div class="grid3">' + stat("Completed", r.completedCount + "/" + r.totalCount) + stat("Volume", Math.round(r.actualMeters / 1000) + " km") + stat("Avg RPE", r.averageRPE ? r.averageRPE.toFixed(1) : "—") + '</div>' +
+      out.innerHTML = '<div class="grid3">' + stat("Completed", r.completedCount + "/" + r.totalCount) + stat("Volume", Math.round(E.fromMeters(r.actualMeters)) + " " + ul()) + stat("Avg RPE", r.averageRPE ? r.averageRPE.toFixed(1) : "—") + '</div>' +
+        (r.averagePace ? '<div class="muted small" style="margin-top:8px">Avg actual pace <b class="mono">' + E.fmtPace(r.averagePace) + ' /' + ul() + '</b></div>' : "") +
         (r.notes.length ? '<div class="sec"><h4>Notes</h4>' + r.notes.map(function (n) { return '<div class="note-line">📝 ' + esc(n) + '</div>'; }).join("") + '</div>' : "");
       var btn = h('<a class="btn secondary" style="display:block;text-align:center;text-decoration:none;margin-top:12px">Review this week with Claude ↗</a>');
       btn.href = E.claudeUrl(E.weeklyReviewPrompt(wk, v)); btn.target = "_blank";
@@ -601,7 +768,7 @@
       var upto = plan.weeks.filter(function (w) { return w.index <= cwi; });
       var weeks = (upto.length ? upto : plan.weeks).slice(-n);
       var b = E.blockReview(weeks, v);
-      bout.innerHTML = '<div class="grid3">' + stat("Weeks", "W" + weeks[0].index + "–" + weeks[weeks.length - 1].index) + stat("Completion", Math.round(b.completionRate * 100) + "%") + stat("Volume", Math.round(b.totalActualMeters / 1000) + " km") + '</div>';
+      bout.innerHTML = '<div class="grid3">' + stat("Weeks", "W" + weeks[0].index + "–" + weeks[weeks.length - 1].index) + stat("Completion", Math.round(b.completionRate * 100) + "%") + stat("Volume", Math.round(E.fromMeters(b.totalActualMeters)) + " " + ul()) + '</div>';
       var btn = h('<a class="btn secondary" style="display:block;text-align:center;text-decoration:none;margin-top:12px">Review this block with Claude ↗</a>');
       btn.href = E.claudeUrl(E.blockReviewPrompt(weeks, v)); btn.target = "_blank"; bout.appendChild(btn);
     }
@@ -613,6 +780,21 @@
     body.appendChild(plc);
   }
   function stat(label, val) { return '<div><div class="muted small">' + label + '</div><div style="font-size:20px;font-weight:700" class="mono">' + val + '</div></div>'; }
+  function paceChart(rows, targetKm) {
+    var W = 320, H = 120, pad = 8;
+    var vals = rows.map(function (r) { return r.averagePace; }).concat([targetKm]);
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals), rng = (max - min) || 1;
+    var n = rows.length;
+    var X = function (i) { return pad + (W - 2 * pad) * (n <= 1 ? 0.5 : i / (n - 1)); };
+    var Y = function (s) { return pad + (H - 2 * pad) * ((s - min) / rng); };  // faster (smaller) = higher
+    var d = rows.map(function (r, i) { return (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(r.averagePace).toFixed(1); }).join(" ");
+    var dots = rows.map(function (r, i) { return '<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(r.averagePace).toFixed(1) + '" r="3" fill="var(--accent)"/>'; }).join("");
+    var ty = Y(targetKm).toFixed(1);
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="margin-top:8px;display:block">' +
+      '<line x1="0" y1="' + ty + '" x2="' + W + '" y2="' + ty + '" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="5 4"/>' +
+      '<path d="' + d + '" fill="none" stroke="var(--accent)" stroke-width="2.5"/>' + dots + '</svg>';
+    return h('<div>' + svg + '</div>');
+  }
   function forecastChart(f) {
     var W = 320, H = 120, pad = 6;
     var pts = f.points, n = pts.length;
@@ -637,18 +819,22 @@
   function renderSettings(body) {
     // appearance
     var d = state.data; d.theme = d.theme || {};
-    var ap = h('<div class="card"><h2>Appearance</h2>' +
+    var isMi = (d.units === "mi");
+    var ap = h('<div class="card"><h2>Appearance &amp; units</h2>' +
+      '<div class="toggle-row"><span>Units</span><span><button class="mini" id="u-km"' + (isMi ? "" : ' style="background:var(--accent);color:#fff"') + '>km</button> <button class="mini" id="u-mi"' + (isMi ? ' style="background:var(--accent);color:#fff"' : "") + '>mi</button></span></div>' +
       '<div class="toggle-row"><span>Accent colour</span><input id="s-accent" type="color" style="width:52px;height:34px;padding:2px;border:1px solid var(--line);border-radius:8px" value="' + (d.theme.accent || "#2f6df6") + '" /></div>' +
-      '<p class="muted small">Sets the highlight colour across buttons, tabs and links.</p>' +
+      '<p class="muted small">Distances &amp; paces switch between km and miles across the whole app.</p>' +
       '<button class="btn secondary" id="s-theme-reset">Reset colour</button></div>');
     body.appendChild(ap);
     document.getElementById("s-accent").oninput = function (e) { d.theme.accent = e.target.value; applyTheme(); saveData(); };
     document.getElementById("s-theme-reset").onclick = function () { d.theme = {}; applyTheme(); saveData(); renderMain(); };
+    document.getElementById("u-km").onclick = function () { d.units = "km"; E.setUnits("km"); saveData(); renderMain(); };
+    document.getElementById("u-mi").onclick = function () { d.units = "mi"; E.setUnits("mi"); saveData(); renderMain(); };
 
     // fitness test / retest
     if (hasProfile()) {
       var t = h('<div class="card"><h2>Fitness test (VCR)</h2>' +
-        '<p class="muted small">Active: <b>' + d.testMeters + ' m in ' + d.testMinutes + ' min</b> → ref pace ' + E.fmtPace(E.referencePace(E.velocityFromTest(d.testMeters, d.testMinutes))) + '/km</p>' +
+        '<p class="muted small">Active: <b>' + d.testMeters + ' m in ' + d.testMinutes + ' min</b> → ref pace ' + E.fmtPace(E.referencePace(E.velocityFromTest(d.testMeters, d.testMinutes))) + '/' + ul() + '</p>' +
         '<h3 style="margin-top:8px">Re-test</h3>' +
         '<div class="grid2"><div><label class="field">New distance (m)</label><input id="rt-m" type="number" inputmode="numeric" placeholder="e.g. 9300" /></div>' +
         '<div><label class="field">Length</label><select id="rt-min"><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select></div></div>' +
@@ -670,7 +856,7 @@
       var rows = (d.testHistory || []).slice().reverse();
       hist.innerHTML = '<h4>History</h4>' + (rows.length ? rows.map(function (r) {
         var active = r.meters === d.testMeters && r.minutes === d.testMinutes;
-        return '<div class="toggle-row"><span class="small">' + new Date(r.dateISO).toLocaleDateString() + ' · ' + r.meters + ' m / ' + r.minutes + ' min · ' + E.fmtPace(E.referencePace(E.velocityFromTest(r.meters, r.minutes))) + '/km</span>' + (active ? '<span class="pill used">active</span>' : '<button class="stepbtn" style="width:auto;padding:0 10px;font-size:13px" data-uid="' + r.id + '">Use</button>') + '</div>';
+        return '<div class="toggle-row"><span class="small">' + new Date(r.dateISO).toLocaleDateString() + ' · ' + r.meters + ' m / ' + r.minutes + ' min · ' + E.fmtPace(E.referencePace(E.velocityFromTest(r.meters, r.minutes))) + '/' + ul() + '</span>' + (active ? '<span class="pill used">active</span>' : '<button class="stepbtn" style="width:auto;padding:0 10px;font-size:13px" data-uid="' + r.id + '">Use</button>') + '</div>';
       }).join("") : '<span class="muted small">No history yet.</span>');
       Array.prototype.forEach.call(hist.querySelectorAll("[data-uid]"), function (b) {
         b.onclick = function () { var r = d.testHistory.find(function (x) { return x.id === b.getAttribute("data-uid"); }); if (r) { d.testMeters = r.meters; d.testMinutes = r.minutes; regeneratePreserving(); saveData(); renderMain(); } };
@@ -713,8 +899,10 @@
     // plan management
     if (state.data.plan) {
       var pm = h('<div class="card"><h2>Current plan</h2><p class="muted small">' + (state.data.goal ? "Goal: " + esc(state.data.goal.title) : "Rolling base block") + ' · ' + state.data.plan.weeks.length + ' weeks' + (state.data.archived && state.data.archived.length ? ' · ' + state.data.archived.length + ' archived' : "") + '</p>' +
+        '<button class="btn secondary" id="export-ics">📅 Add plan to calendar (.ics)</button>' +
         '<button class="btn secondary" id="finish">Finish & archive this plan</button></div>');
       body.appendChild(pm);
+      document.getElementById("export-ics").onclick = function () { downloadFile("widestrides-plan.ics", buildICS(state.data.plan), "text/calendar"); };
       document.getElementById("finish").onclick = function () {
         if (!confirm("Archive this plan? Its logged sessions are kept in history, and the plan clears so you can start the next block.")) return;
         d.archived = (d.archived || []).concat([{ title: state.data.goal ? state.data.goal.title : "Base block", at: new Date().toISOString(), weeks: state.data.plan.weeks.length }]);
@@ -724,6 +912,28 @@
         saveData(); state.tab = "plan"; renderMain();
       };
     }
+
+    // backup / restore
+    var bk = h('<div class="card"><h2>Backup</h2><p class="muted small">Download all your data as a file, or restore it later / on another account.</p>' +
+      '<button class="btn secondary" id="bk-exp">⬇︎ Download my data (.json)</button>' +
+      '<label class="btn secondary" style="display:block;text-align:center;cursor:pointer">⬆︎ Restore from file<input id="bk-imp" type="file" accept="application/json,.json" style="display:none" /></label>' +
+      '<div id="bk-msg"></div></div>');
+    body.appendChild(bk);
+    document.getElementById("bk-exp").onclick = function () { downloadFile("widestrides-backup.json", JSON.stringify(state.data, null, 2), "application/json"); };
+    document.getElementById("bk-imp").onchange = function (e) {
+      var f = e.target.files[0]; if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function () {
+        try {
+          var obj = JSON.parse(rd.result);
+          if (!confirm("Restore this backup? It replaces your current data on this account.")) return;
+          state.data = obj; if (state.data.plan) ensureIds(state.data.plan);
+          E.setUnits(state.data.units || "km"); applyTheme();
+          saveData(); state.tab = "plan"; renderMain();
+        } catch (err) { var m = document.getElementById("bk-msg"); m.className = "err"; m.textContent = "That file isn't a valid backup."; }
+      };
+      rd.readAsText(f);
+    };
 
     // reset
     var dz = h('<div class="card"><h2>Reset</h2><p class="muted small">Wipes your profile, plan, races and logs on this account.</p><button class="btn danger" id="reset-all">Reset everything</button></div>');
@@ -754,7 +964,7 @@
 
     if (!d || !(d.testMeters > 0)) { body.appendChild(h('<div class="card muted">This member hasn\'t set up a test yet.</div>')); return; }
     var v = E.velocityFromTest(d.testMeters, d.testMinutes);
-    var info = h('<div class="card small"><div class="muted">Reference pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + '/km</b> · test ' + d.testMeters + ' m / ' + d.testMinutes + ' min' + (d.goal ? ' · goal ' + esc(d.goal.title) : "") + '</div></div>');
+    var info = h('<div class="card small"><div class="muted">Reference pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + '/' + ul() + '</b> · test ' + d.testMeters + ' m / ' + d.testMinutes + ' min' + (d.goal ? ' · goal ' + esc(d.goal.title) : "") + '</div></div>');
     body.appendChild(info);
     if (d.goal && d.plan) {
       var f = E.forecast(d.plan, d, E.currentWeekIndex(d.plan));
@@ -773,7 +983,7 @@
           '<span>' + (w.completed ? "✓ " : "") + esc(w.title) + '</span>' +
           (w.isCustomized ? '<span class="badge-edit"> ·edited</span>' : "") +
           '<span class="wo-day">' + dayLabel(w.dateISO) + '</span></div>' +
-          '<div class="wo-detail">' + esc(w.detail) + '</div>' +
+          '<div class="wo-detail">' + esc(w.steps && w.steps.length ? E.summarizeSteps(w.steps) : w.detail) + '</div>' +
           (w.coachNote ? '<div class="note-line" style="color:var(--accent)">🧑‍🏫 ' + esc(w.coachNote) + '</div>' : "") + '</div>');
         wo.onclick = function () { openDetail(w.id); };
         box.appendChild(wo);
@@ -793,4 +1003,9 @@
     _loaded = false; state.data = null; render();
   }
   boot();
+
+  // PWA: register the service worker (skips file://, where it isn't allowed)
+  if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); });
+  }
 })();
