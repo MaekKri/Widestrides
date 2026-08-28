@@ -50,6 +50,21 @@
     setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 500);
   }
   function icsDate(iso) { var d = new Date(iso); return d.getUTCFullYear() + String(d.getUTCMonth() + 1).padStart(2, "0") + String(d.getUTCDate()).padStart(2, "0"); }
+  // Three separate h / m / s boxes — easier than typing "h:mm:ss".
+  function hmsInputs(idH, idM, idS, totalSec) {
+    var t = totalSec > 0 ? Math.round(totalSec) : 0;
+    var hh = Math.floor(t / 3600), mm = Math.floor((t % 3600) / 60), ss = t % 60;
+    var box = 'inputmode="numeric" style="flex:1;min-width:0;text-align:center"';
+    return '<div class="row" style="gap:6px">' +
+      '<input id="' + idH + '" ' + box + ' placeholder="h" value="' + (hh || "") + '" /><span class="muted">:</span>' +
+      '<input id="' + idM + '" ' + box + ' placeholder="min" value="' + (mm || "") + '" /><span class="muted">:</span>' +
+      '<input id="' + idS + '" ' + box + ' placeholder="sec" value="' + (ss || "") + '" /></div>';
+  }
+  function readHMS(idH, idM, idS, root) {
+    var r = root || document;
+    var g = function (id) { var e = r.querySelector("#" + id); return e ? (parseInt(e.value, 10) || 0) : 0; };
+    return g(idH) * 3600 + g(idM) * 60 + g(idS);
+  }
   function buildICS(plan, name) {
     var L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Widestrides//EN", "CALSCALE:GREGORIAN"];
     (plan.weeks || []).forEach(function (wk) {
@@ -248,7 +263,7 @@
       '<label class="field">Distance</label><select id="f-dist">' + raceOptions(g) + '</select>' +
       '<div class="grid2" id="custom-wrap" style="display:none"><div><label class="field">Custom metres</label><input id="f-cm" type="number" value="' + (g.meters || "") + '" /></div><div></div></div>' +
       '<div class="grid2"><div><label class="field">Race date</label><input id="f-date" type="date" value="' + (g.dateISO ? g.dateISO.slice(0, 10) : "") + '" /></div>' +
-      '<div><label class="field">Goal time (optional)</label><input id="f-time" placeholder="h:mm:ss" value="' + (g.goalTimeSec ? E.fmtHMS(g.goalTimeSec) : "") + '" /></div></div>' +
+      '<div><label class="field">Goal time (optional)</label>' + hmsInputs("g-h", "g-m", "g-s", g.goalTimeSec) + '</div></div>' +
       '<button class="btn" id="gen">Generate my plan</button><div id="gmsg"></div></div>'));
     if (d.testMinutes) document.getElementById("f-min").value = String(d.testMinutes);
     if (d.daysPerWeek) document.getElementById("f-days").value = String(d.daysPerWeek);
@@ -264,7 +279,7 @@
         var gm, title;
         if (dv === "custom") { gm = parseFloat(document.getElementById("f-cm").value); title = E.km(gm) + " km"; }
         else { var p = E.RACE_PRESETS.find(function (x) { return x.key === dv; }); gm = p.meters; title = p.title; }
-        if (gm >= 1000) { var gt = parseTime(document.getElementById("f-time").value); goal = { meters: gm, title: title, dateISO: dateV ? new Date(dateV).toISOString() : null, goalTimeSec: isFinite(gt) ? gt : null }; }
+        if (gm >= 1000) { var gt = readHMS("g-h", "g-m", "g-s"); goal = { meters: gm, title: title, dateISO: dateV ? new Date(dateV).toISOString() : null, goalTimeSec: gt > 0 ? gt : null }; }
       }
       var now = new Date().toISOString();
       state.data = Object.assign({}, state.data, { name: document.getElementById("f-name").value.trim(), testMeters: meters, testMinutes: minutes, daysPerWeek: days, startISO: now });
@@ -483,10 +498,10 @@
       chk.querySelector("input").onchange = function (e) { w.completed = e.target.checked; };
       log.appendChild(chk);
       // actual run — typed by the athlete, feeds Progress accurately
-      var act = h('<div style="margin-top:10px"><label class="field">Actual run (optional — makes Progress accurate)</label>' +
-        '<div class="grid2"><input id="act-km" inputmode="decimal" placeholder="distance ' + ul() + '" value="' + (w.actualMeters > 0 ? E.fromMeters(w.actualMeters).toFixed(2).replace(/\.?0+$/, "") : "") + '" />' +
-        '<input id="act-t" placeholder="time h:mm:ss" value="' + (w.actualSeconds > 0 ? E.fmtHMS(w.actualSeconds) : "") + '" /></div>' +
-        '<div class="small muted" id="act-pace" style="margin-top:4px"></div></div>');
+      var act = h('<div style="margin-top:10px"><label class="field">Actual run — whole session incl. warm-up &amp; cool-down (optional)</label>' +
+        '<label class="field" style="margin-top:2px">Total distance (' + ul() + ')</label><input id="act-km" inputmode="decimal" placeholder="e.g. 8.5" value="' + (w.actualMeters > 0 ? E.fromMeters(w.actualMeters).toFixed(2).replace(/\.?0+$/, "") : "") + '" />' +
+        '<label class="field" style="margin-top:8px">Total time</label>' + hmsInputs("act-h", "act-m", "act-s", w.actualSeconds) +
+        '<div class="small muted" id="act-pace" style="margin-top:6px"></div></div>');
       log.appendChild(act);
       var rpe = h('<div style="margin-top:10px"><div class="row spread"><span class="small">Effort (RPE)</span><span class="small mono" id="rpev">' + (w.rpe || "—") + ' / 10</span></div><input type="range" min="1" max="10" step="1" value="' + (w.rpe || 5) + '" /></div>');
       rpe.querySelector("input").oninput = function (e) { w.rpe = parseInt(e.target.value, 10); document.getElementById("rpev").textContent = w.rpe + " / 10"; };
@@ -495,15 +510,17 @@
       note.querySelector("textarea").oninput = function (e) { w.note = e.target.value; };
       log.appendChild(note);
       sheet.appendChild(log);
-      var km = log.querySelector("#act-km"), tm = log.querySelector("#act-t"), pv = log.querySelector("#act-pace");
+      var km = log.querySelector("#act-km"), pv = log.querySelector("#act-pace");
       function syncActual() {
-        var k = parseFloat(km.value), s = parseTime(tm.value);
+        var k = parseFloat(km.value), s = readHMS("act-h", "act-m", "act-s", log);
         w.actualMeters = k > 0 ? E.toMeters(k) : undefined;
-        w.actualSeconds = isFinite(s) && s > 0 ? s : undefined;
+        w.actualSeconds = s > 0 ? s : undefined;
         if (w.actualMeters && w.actualSeconds) { pv.textContent = "= " + E.fmtPace(actualPaceKm(w)) + " /" + ul(); if (!w.completed) { w.completed = true; chk.querySelector("input").checked = true; } }
         else pv.textContent = "";
       }
-      km.oninput = syncActual; tm.oninput = syncActual; syncActual();
+      km.oninput = syncActual;
+      ["act-h", "act-m", "act-s"].forEach(function (id) { log.querySelector("#" + id).oninput = syncActual; });
+      syncActual();
     }
 
     var save = h('<button class="btn" style="margin-top:18px">' + (coach ? "Save changes for athlete" : "Save") + '</button>');
@@ -868,7 +885,7 @@
       '<h3 style="margin-top:10px">Add a race</h3>' +
       '<label class="field">Distance</label><select id="rc-dist">' + raceOptions({}) + '</select>' +
       '<div class="grid2" id="rc-cw" style="display:none"><div><label class="field">Custom m</label><input id="rc-cm" type="number" /></div><div></div></div>' +
-      '<div class="grid2"><div><label class="field">Date</label><input id="rc-date" type="date" /></div><div><label class="field">Goal time (optional)</label><input id="rc-time" placeholder="h:mm:ss" /></div></div>' +
+      '<div class="grid2"><div><label class="field">Date</label><input id="rc-date" type="date" /></div><div><label class="field">Goal time (optional)</label>' + hmsInputs("rc-h", "rc-m", "rc-s", 0) + '</div></div>' +
       '<button class="btn" id="rc-add">Add race</button><div id="rc-msg"></div></div>');
     body.appendChild(rc);
     var rcd = document.getElementById("rc-dist");
@@ -891,8 +908,8 @@
       if (dv === "custom") { gm = parseFloat(document.getElementById("rc-cm").value); title = E.km(gm) + " km"; }
       else { var p = E.RACE_PRESETS.find(function (x) { return x.key === dv; }); gm = p.meters; title = p.title; }
       if (!(gm >= 1000)) { msg.className = "err"; msg.textContent = "Distance too small."; return; }
-      var dateV = document.getElementById("rc-date").value, gt = parseTime(document.getElementById("rc-time").value);
-      d.races = (d.races || []).concat([{ id: rid("r-"), meters: gm, title: title, dateISO: dateV ? new Date(dateV).toISOString() : null, goalTimeSec: isFinite(gt) ? gt : null }]);
+      var dateV = document.getElementById("rc-date").value, gt = readHMS("rc-h", "rc-m", "rc-s");
+      d.races = (d.races || []).concat([{ id: rid("r-"), meters: gm, title: title, dateISO: dateV ? new Date(dateV).toISOString() : null, goalTimeSec: gt > 0 ? gt : null }]);
       regeneratePreserving(); saveData(); renderMain();
     };
 
