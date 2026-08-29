@@ -26,7 +26,10 @@ body {
   font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
-#app { max-width: var(--maxw); margin: 0 auto; padding: 0 16px 96px; }
+#app {
+  max-width: var(--maxw); margin: 0 auto;
+  padding: 0 max(16px, env(safe-area-inset-right)) calc(96px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
 .loading { padding: 80px 0; text-align: center; color: var(--muted); }
 
 /* header */
@@ -34,6 +37,8 @@ header.top {
   display: flex; align-items: center; justify-content: space-between;
   padding: 18px 2px 12px; position: sticky; top: 0; background: var(--bg); z-index: 5;
 }
+/* the very top app bar also clears the notch / status bar */
+header.top.appbar { padding-top: calc(18px + env(safe-area-inset-top)); }
 header.top h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
 header.top .who { font-size: 13px; color: var(--muted); }
 
@@ -86,7 +91,7 @@ button.btn:disabled { opacity: .5; cursor: default; }
 .ok { color: var(--easy); font-size: 14px; margin-top: 10px; }
 
 /* auth */
-.auth-wrap { max-width: 400px; margin: 8vh auto 0; }
+.auth-wrap { max-width: 400px; margin: calc(8vh + env(safe-area-inset-top)) auto 0; }
 .auth-wrap h1 { text-align: center; font-size: 30px; margin-bottom: 4px; letter-spacing: -0.03em; }
 .auth-wrap .tag { text-align: center; color: var(--muted); margin-bottom: 24px; }
 

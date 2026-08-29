@@ -226,7 +226,7 @@
     if (state.isAdmin) tabs.push(["admin", "Admin"]);
     if (state.mode === "cloud") tabs.push(["account", "Account"]);
     $app.innerHTML = "";
-    var head = h('<header class="top"><h1>Widestrides</h1></header>');
+    var head = h('<header class="top appbar"><h1>Widestrides</h1></header>');
     if (state.mode === "cloud") { var who = h('<div class="who"></div>'); who.textContent = state.user.email; head.appendChild(who); }
     $app.appendChild(head);
     if (state.mode === "local") $app.appendChild(h('<div class="banner">Running locally — your plan is saved in this browser only. Add your Supabase keys in <code>config.js</code> to enable sign-in, invite codes and cloud save.</div>'));
