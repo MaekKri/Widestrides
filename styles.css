@@ -72,9 +72,11 @@ nav.tabs button.active { background: var(--accent); border-color: var(--accent);
 /* forms */
 label.field { display: block; margin: 12px 0 4px; font-size: 13px; color: var(--muted); }
 input, select {
-  width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
+  width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
   background: var(--bg); color: var(--text); font-size: 16px;
 }
+/* iOS date/time inputs have a large intrinsic width — force them to fit */
+input[type="date"], input[type="time"] { -webkit-appearance: none; appearance: none; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 @media (max-width: 480px) { .grid3 { grid-template-columns: 1fr 1fr; } }

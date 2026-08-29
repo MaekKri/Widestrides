@@ -262,8 +262,8 @@
       '<h3 style="margin-top:20px">Goal race (optional)</h3>' +
       '<label class="field">Distance</label><select id="f-dist">' + raceOptions(g) + '</select>' +
       '<div class="grid2" id="custom-wrap" style="display:none"><div><label class="field">Custom metres</label><input id="f-cm" type="number" value="' + (g.meters || "") + '" /></div><div></div></div>' +
-      '<div class="grid2"><div><label class="field">Race date</label><input id="f-date" type="date" value="' + (g.dateISO ? g.dateISO.slice(0, 10) : "") + '" /></div>' +
-      '<div><label class="field">Goal time (optional)</label>' + hmsInputs("g-h", "g-m", "g-s", g.goalTimeSec) + '</div></div>' +
+      '<label class="field">Race date</label><input id="f-date" type="date" value="' + (g.dateISO ? g.dateISO.slice(0, 10) : "") + '" />' +
+      '<label class="field">Goal time (optional)</label>' + hmsInputs("g-h", "g-m", "g-s", g.goalTimeSec) +
       '<button class="btn" id="gen">Generate my plan</button><div id="gmsg"></div></div>'));
     if (d.testMinutes) document.getElementById("f-min").value = String(d.testMinutes);
     if (d.daysPerWeek) document.getElementById("f-days").value = String(d.daysPerWeek);
@@ -885,7 +885,8 @@
       '<h3 style="margin-top:10px">Add a race</h3>' +
       '<label class="field">Distance</label><select id="rc-dist">' + raceOptions({}) + '</select>' +
       '<div class="grid2" id="rc-cw" style="display:none"><div><label class="field">Custom m</label><input id="rc-cm" type="number" /></div><div></div></div>' +
-      '<div class="grid2"><div><label class="field">Date</label><input id="rc-date" type="date" /></div><div><label class="field">Goal time (optional)</label>' + hmsInputs("rc-h", "rc-m", "rc-s", 0) + '</div></div>' +
+      '<label class="field">Date</label><input id="rc-date" type="date" />' +
+      '<label class="field">Goal time (optional)</label>' + hmsInputs("rc-h", "rc-m", "rc-s", 0) +
       '<button class="btn" id="rc-add">Add race</button><div id="rc-msg"></div></div>');
     body.appendChild(rc);
     var rcd = document.getElementById("rc-dist");
