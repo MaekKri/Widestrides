@@ -259,6 +259,9 @@
       '<div class="grid2"><div><label class="field">Test distance (metres)</label><input id="f-m" type="number" inputmode="numeric" value="' + (d.testMeters || "") + '" placeholder="e.g. 9000" /></div>' +
       '<div><label class="field">Test length</label><select id="f-min"><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select></div></div>' +
       '<label class="field">Training days per week</label><select id="f-days"><option>3</option><option>4</option><option>5</option><option>6</option></select>' +
+      '<div class="grid2"><div><label class="field">Current level</label><select id="f-level"><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select></div>' +
+      '<div><label class="field">Longest run lately (' + ul() + ', optional)</label><input id="f-long" type="number" inputmode="decimal" placeholder="e.g. 14" /></div></div>' +
+      '<p class="muted small" style="margin-top:4px">Level scales the workout load; longest run sets where your long runs start (no more starting below what you already do).</p>' +
       '<h3 style="margin-top:20px">Goal race (optional)</h3>' +
       '<label class="field">Distance</label><select id="f-dist">' + raceOptions(g) + '</select>' +
       '<div class="grid2" id="custom-wrap" style="display:none"><div><label class="field">Custom metres</label><input id="f-cm" type="number" value="' + (g.meters || "") + '" /></div><div></div></div>' +
@@ -267,6 +270,8 @@
       '<button class="btn" id="gen">Generate my plan</button><div id="gmsg"></div></div>'));
     if (d.testMinutes) document.getElementById("f-min").value = String(d.testMinutes);
     if (d.daysPerWeek) document.getElementById("f-days").value = String(d.daysPerWeek);
+    if (d.level) document.getElementById("f-level").value = d.level;
+    if (d.longestRunMeters > 0) document.getElementById("f-long").value = E.fromMeters(d.longestRunMeters).toFixed(2).replace(/\.?0+$/, "");
     var distSel = document.getElementById("f-dist");
     function sc() { document.getElementById("custom-wrap").style.display = distSel.value === "custom" ? "" : "none"; }
     distSel.onchange = sc; sc();
@@ -282,7 +287,9 @@
         if (gm >= 1000) { var gt = readHMS("g-h", "g-m", "g-s"); goal = { meters: gm, title: title, dateISO: dateV ? new Date(dateV).toISOString() : null, goalTimeSec: gt > 0 ? gt : null }; }
       }
       var now = new Date().toISOString();
-      state.data = Object.assign({}, state.data, { name: document.getElementById("f-name").value.trim(), testMeters: meters, testMinutes: minutes, daysPerWeek: days, startISO: now });
+      var lvl = document.getElementById("f-level").value;
+      var longKm = parseFloat(document.getElementById("f-long").value);
+      state.data = Object.assign({}, state.data, { name: document.getElementById("f-name").value.trim(), testMeters: meters, testMinutes: minutes, daysPerWeek: days, level: lvl, longestRunMeters: longKm > 0 ? E.toMeters(longKm) : 0, startISO: now });
       state.data.races = goal ? [Object.assign({ id: rid("r-") }, goal)] : (state.data.races || []);
       state.data.goal = activeRace(state.data.races);
       state.data.testHistory = (state.data.testHistory || []).concat([{ id: rid("t-"), meters: meters, minutes: minutes, dateISO: now }]);
@@ -565,7 +572,7 @@
     var d = activeData();
     var v = E.velocityFromTest(d.testMeters, d.testMinutes);
     var wk = d.plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; }) || {};
-    var fresh = E.buildWorkoutOfKind(kind, wk.phase, v, d.goal || null, w.plannedMeters);
+    var fresh = E.buildWorkoutOfKind(kind, wk.phase, v, d.goal || null, w.plannedMeters, d.level);
     fresh.steps.forEach(function (s) { s.id = rid("s-"); });
     w.type = fresh.type; w.title = fresh.title; w.zone = fresh.zone; w.kind = kind;
     w.steps = fresh.steps; w.detail = fresh.detail;

@@ -237,7 +237,10 @@
     fartlek: "Fartlek", progression: "Progression Run", hills: "Hill Reps", stridesEasy: "Easy + Strides",
   };
 
-  function qualityWorkout(kind, phase, velocity) {
+  function qualityWorkout(kind, phase, velocity, lf) {
+    lf = lf || 1;
+    const R = n => Math.max(2, Math.round(n * lf));   // scale rep counts by level
+    const M = n => Math.max(4, Math.round(n * lf));   // scale minutes by level
     const v = roundToTable(velocity);
     const wu = step("warmup", "Warm-up easy + strides", "time", 15 * 60);
     const cd = step("cooldown", "Cool-down easy", "time", 10 * 60);
@@ -249,7 +252,7 @@
 
     if (kind === "intervals") {
       const map = { base: [5, 800], build: [6, 1000], peak: [8, 1000], taper: [4, 600], raceWeek: [3, 400] };
-      const [reps, m] = map[phase];
+      const reps = R(map[phase][0]), m = map[phase][1];
       steps = [wu,
         step("work", Math.round(m) + " m hard", "distance", m, { repeatCount: reps, paceLow: iv.paceSlow, paceHigh: iv.pace }),
         step("recovery", "Jog recovery", "distance", 200, { repeatCount: reps, restIsJog: true }),
@@ -257,14 +260,14 @@
       title = QUALITY_TITLE.intervals;
     } else if (kind === "tempo") {
       const map = { base: 15, build: 20, peak: 25, taper: 12, raceWeek: 10 };
-      const min = map[phase];
+      const min = M(map[phase]);
       steps = [wu,
         step("work", "Tempo @ threshold", "time", min * 60, { paceLow: adjustPace(thr.pace, 5), paceHigh: thr.pace, hr: 168 }),
         cd];
       title = QUALITY_TITLE.tempo;
     } else if (kind === "cruiseIntervals") {
       const map = { base: [4, 5], build: [5, 6], peak: [3, 10], taper: [3, 4], raceWeek: [2, 4] };
-      const [reps, min] = map[phase];
+      const reps = R(map[phase][0]), min = map[phase][1];
       steps = [wu,
         step("work", min + " min cruise", "time", min * 60, { repeatCount: reps, paceLow: adjustPace(thr.pace, 5), paceHigh: thr.pace, hr: 168 }),
         step("recovery", "Float", "time", 90, { repeatCount: reps, restIsJog: true }),
@@ -272,7 +275,7 @@
       title = QUALITY_TITLE.cruiseIntervals;
     } else if (kind === "fartlek") {
       const map = { base: [8, 60, 60], build: [10, 60, 60], peak: [6, 120, 90], taper: [6, 45, 60], raceWeek: [5, 40, 60] };
-      const [reps, hard, e] = map[phase];
+      const reps = R(map[phase][0]), hard = map[phase][1], e = map[phase][2];
       steps = [wu,
         step("work", hard + " s surge", "time", hard, { repeatCount: reps, paceLow: iv.paceSlow, paceHigh: iv.pace }),
         step("recovery", e + " s easy", "time", e, { repeatCount: reps, restIsJog: true }),
@@ -280,7 +283,7 @@
       title = QUALITY_TITLE.fartlek;
     } else if (kind === "progression") {
       const map = { base: [30, 10], build: [40, 15], peak: [45, 20], taper: [25, 8], raceWeek: [20, 6] };
-      const [total, fast] = map[phase];
+      const total = M(map[phase][0]), fast = Math.min(M(map[phase][1]), total - 4);
       steps = [
         step("work", "Easy build", "time", (total - fast) * 60, { paceLow: adjustPace(easy.pace, 15), paceHigh: steady.pace }),
         step("work", "Finish at threshold", "time", fast * 60, { paceLow: adjustPace(thr.pace, 6), paceHigh: thr.pace, hr: 168 }),
@@ -288,7 +291,7 @@
       title = QUALITY_TITLE.progression;
     } else if (kind === "hills") {
       const map = { base: [6, 45], build: [8, 45], peak: [10, 60], taper: [5, 30], raceWeek: [4, 30] };
-      const [reps, secs] = map[phase];
+      const reps = R(map[phase][0]), secs = map[phase][1];
       steps = [wu,
         step("work", secs + " s uphill hard", "time", secs, { repeatCount: reps }),
         step("recovery", "Jog down", "lapButton", 0, { repeatCount: reps, restIsJog: true }),
@@ -312,17 +315,18 @@
 
   // ---- Plan generator (mirrors PlanGenerator.swift) ------------------------
 
-  function longRunMeters(i, phase, buildWeeks, peak) {
+  // Long run ramps from the runner's CURRENT longest (startM) up to peak, growing
+  // ≤10%/week (injury-safe), with a lighter down-week every 3rd week.
+  function longRunMeters(i, phase, buildWeeks, peak, startM) {
     const round500 = m => Math.round(m / 500) * 500;
     if (phase === "taper") {
       const taperWeekNo = i - buildWeeks;
       const f = [0.6, 0.45, 0.35][Math.min(Math.max(0, taperWeekNo - 1), 2)];
       return round500(peak * f);
     }
-    const denom = Math.max(1, buildWeeks - 1);
-    let frac = 0.55 + (1.0 - 0.55) * (i - 1) / denom;
-    if (i % 3 === 0 && i !== buildWeeks) frac *= 0.82;
-    return round500(peak * Math.min(frac, 1.0));
+    let raw = startM * Math.pow(1.10, i - 1);
+    if (i % 3 === 0 && i !== buildWeeks) raw *= 0.82;   // recovery week
+    return round500(Math.min(raw, peak));
   }
   function phaseFor(i, total, buildWeeks, taperWeeksN) {
     if (taperWeeksN > 0) {
@@ -334,16 +338,26 @@
     if (i <= 2 * third) return "build";
     return "peak";
   }
-  function longRunWorkout(meters, velocity, goal) {
+  function longRunWorkout(meters, velocity, goal, goalPace) {
     const v = roundToTable(velocity);
     const easy = prescription("enduranceEasy", v);
     const kmv = meters / 1000;
-    const steps = [step("work", "Long run — relaxed & continuous", "distance", meters,
-      { paceLow: adjustPace(easy.pace, 20), paceHigh: easy.pace, hr: 150 })];
+    const easyStep = step("work", "Long run — relaxed & continuous", "distance", meters,
+      { paceLow: adjustPace(easy.pace, 20), paceHigh: easy.pace, hr: 150 });
+    const steps = [easyStep];
     if (goal && !isSpeedFocused(goal.meters) && kmv >= 16) {
-      const steady = prescription("enduranceSteady", v);
-      steps.push(step("work", "Final 3 km steady", "distance", 3000,
-        { paceLow: adjustPace(steady.pace, 8), paceHigh: steady.pace, hr: 150 }));
+      if (goalPace) {
+        // Finish at the runner's actual goal race pace (makes goal time matter).
+        const finalKm = Math.min(8, Math.max(2, Math.round(kmv * 0.25)));
+        easyStep.durationValue = Math.max(1000, meters - finalKm * 1000);
+        steps.push(step("work", "Final " + finalKm + " km @ goal pace", "distance", finalKm * 1000,
+          { paceLow: adjustPace(goalPace, 4), paceHigh: adjustPace(goalPace, -4), hr: 168 }));
+      } else {
+        const steady = prescription("enduranceSteady", v);
+        easyStep.durationValue = Math.max(1000, meters - 3000);
+        steps.push(step("work", "Final 3 km steady", "distance", 3000,
+          { paceLow: adjustPace(steady.pace, 8), paceHigh: steady.pace, hr: 150 }));
+      }
     }
     return { type: "longRun", title: "Long Run", zone: "enduranceEasy", plannedMeters: meters, steps, detail: summarizeSteps(steps) };
   }
@@ -382,7 +396,14 @@
     }
     const taperN = profile.goal ? taperWeeks(profile.goal.meters) : 0;
     const buildWeeks = Math.max(1, totalWeeks - taperN);
-    const peak = profile.goal ? peakLongRunMeters(profile.goal.meters) : 16000;
+    // Personalisation: level scales load; current longest sets the long-run start/peak.
+    const lf = levelFactor(profile.level);
+    const longest = profile.longestRunMeters > 0 ? profile.longestRunMeters : 0;
+    let peak = profile.goal ? peakLongRunMeters(profile.goal.meters) : 16000;
+    if (longest > 0) peak = Math.max(peak, longest * 1.15);       // already run far → aim higher
+    const startM = longest > 0 ? Math.min(longest, peak) : peak * 0.55;
+    const goalPace = (profile.goal && profile.goal.goalTimeSec)
+      ? profile.goal.goalTimeSec / (profile.goal.meters / 1000) : null;
 
     const weeks = [];
     for (let i = 1; i <= totalWeeks; i++) {
@@ -398,11 +419,11 @@
         }
         workouts.push(withDate(raceWorkout(profile.goal), new Date(profile.goal.dateISO)));
       } else {
-        const lm = longRunMeters(i, phase, buildWeeks, peak);
-        workouts.push(withDate(longRunWorkout(lm, velocity, profile.goal), addDays(weekStart, 6)));   // long = Sunday
+        const lm = longRunMeters(i, phase, buildWeeks, peak, startM);
+        workouts.push(withDate(longRunWorkout(lm, velocity, profile.goal, goalPace), addDays(weekStart, 6)));   // long = Sunday
         const qk = qualityKind(i, phase, speed);
-        workouts.push(withDate(qualityWorkout(qk, phase, velocity), addDays(weekStart, 2)));           // quality = Wed
-        const easyMin = phase === "taper" ? 30 : 40;
+        workouts.push(withDate(qualityWorkout(qk, phase, velocity, lf), addDays(weekStart, 2)));           // quality = Wed
+        const easyMin = Math.round((phase === "taper" ? 30 : 40) * lf);
         const easyDays = [0, 4].slice(0, Math.max(0, profile.daysPerWeek - 2));                        // Mon, Fri…
         for (const d of easyDays) workouts.push(withDate(easyWorkout(easyMin, velocity, null, "enduranceEasy"), addDays(weekStart, d)));
       }
@@ -466,10 +487,13 @@
     { k: "fartlek", t: "Fartlek" }, { k: "progression", t: "Progression" }, { k: "hills", t: "Hill Reps" },
     { k: "stridesEasy", t: "Easy + Strides" }, { k: "easy", t: "Easy Run" }, { k: "long", t: "Long Run" },
   ];
-  function buildWorkoutOfKind(kind, phase, velocity, goal, plannedMeters) {
-    if (kind === "easy") return easyWorkout(40, velocity, null, "enduranceEasy");
-    if (kind === "long") return longRunWorkout(plannedMeters > 3000 ? plannedMeters : 12000, velocity, goal);
-    return qualityWorkout(kind, phase || "build", velocity);
+  function levelFactor(level) { return level === "beginner" ? 0.8 : level === "advanced" ? 1.2 : 1.0; }
+  function buildWorkoutOfKind(kind, phase, velocity, goal, plannedMeters, level) {
+    const lf = levelFactor(level);
+    const gp = (goal && goal.goalTimeSec) ? goal.goalTimeSec / (goal.meters / 1000) : null;
+    if (kind === "easy") return easyWorkout(Math.round(40 * lf), velocity, null, "enduranceEasy");
+    if (kind === "long") return longRunWorkout(plannedMeters > 3000 ? plannedMeters : 12000, velocity, goal, gp);
+    return qualityWorkout(kind, phase || "build", velocity, lf);
   }
 
   // ---- Which week is "now" --------------------------------------------------
