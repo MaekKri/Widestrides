@@ -65,6 +65,19 @@
     var g = function (id) { var e = r.querySelector("#" + id); return e ? (parseInt(e.value, 10) || 0) : 0; };
     return g(idH) * 3600 + g(idM) * 60 + g(idS);
   }
+  function setHMS(idH, idM, idS, sec) {
+    var t = Math.max(0, Math.round(sec)), hh = Math.floor(t / 3600), mm = Math.floor((t % 3600) / 60), ss = t % 60;
+    var g = function (id, v) { var e = document.getElementById(id); if (e) e.value = v; };
+    g(idH, hh || ""); g(idM, mm); g(idS, ss);
+  }
+  // 2-box min:sec (for pace)
+  function msInputs(idM, idS, sec) {
+    var t = sec > 0 ? Math.round(sec) : 0, m = Math.floor(t / 60), s = t % 60;
+    var box = 'inputmode="numeric" style="flex:1;min-width:0;text-align:center"';
+    return '<div class="row" style="gap:6px"><input id="' + idM + '" ' + box + ' placeholder="min" value="' + (m || "") + '" /><span class="muted">:</span><input id="' + idS + '" ' + box + ' placeholder="sec" value="' + (s || "") + '" /></div>';
+  }
+  function readMS(idM, idS) { var g = function (id) { var e = document.getElementById(id); return e ? (parseInt(e.value, 10) || 0) : 0; }; return g(idM) * 60 + g(idS); }
+  function setMS(idM, idS, sec) { var t = Math.max(0, Math.round(sec)), m = Math.floor(t / 60), s = t % 60; var g = function (id, v) { var e = document.getElementById(id); if (e) e.value = v; }; g(idM, m); g(idS, s); }
   function buildICS(plan, name) {
     var L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Widestrides//EN", "CALSCALE:GREGORIAN"];
     (plan.weeks || []).forEach(function (wk) {
@@ -450,13 +463,21 @@
           sec.appendChild(srow);
         }
         w.steps.forEach(function (s, i) {
-          var row = h('<div class="step-edit"></div>');
-          var info = h('<div class="grow"><div class="t">' + (s.repeatCount > 1 ? s.repeatCount + "× " : "") + esc(s.label) + '</div><div class="s">' + editSub(s) + '</div></div>');
+          var row = h('<div class="step-edit" style="flex-wrap:wrap"></div>');
+          var pace = E.stepPaceText(s);
+          var info = h('<div style="flex:1 1 110px;min-width:110px"><div class="t">' + (s.repeatCount > 1 ? s.repeatCount + "× " : "") + esc(s.label) + '</div>' + (pace ? '<div class="s">' + pace + ' /' + ul() + '</div>' : "") + '</div>');
           row.appendChild(info);
-          if (s.durationType !== "lapButton") {
-            var stp = s.durationType === "time" ? 10 : 100, min = s.durationType === "time" ? 10 : 100;
-            row.appendChild(mkBtn("–", function () { s.durationValue = Math.max(min, s.durationValue - stp); w.isCustomized = true; drawSheet(sheet); }));
-            row.appendChild(mkBtn("+", function () { s.durationValue += stp; w.isCustomized = true; drawSheet(sheet); }));
+          var eb = 'inputmode="numeric" style="width:48px;text-align:center;flex:none"';
+          if (s.durationType === "time") {
+            var mm = Math.floor(s.durationValue / 60), ss = Math.round(s.durationValue % 60);
+            var tw = h('<div class="row" style="gap:4px;flex:none"><input class="ed-min" ' + eb + ' value="' + mm + '" /><span class="muted">:</span><input class="ed-sec" ' + eb + ' value="' + String(ss).padStart(2, "0") + '" /></div>');
+            var updT = function () { var m = parseInt(tw.querySelector(".ed-min").value, 10) || 0, se = parseInt(tw.querySelector(".ed-sec").value, 10) || 0; s.durationValue = Math.max(1, m * 60 + se); w.isCustomized = true; };
+            tw.querySelector(".ed-min").oninput = updT; tw.querySelector(".ed-sec").oninput = updT;
+            row.appendChild(tw);
+          } else if (s.durationType === "distance") {
+            var dw = h('<input class="ed-m" inputmode="numeric" style="width:74px;text-align:center;flex:none" value="' + Math.round(s.durationValue) + '" />');
+            dw.oninput = function () { s.durationValue = Math.max(1, parseInt(dw.value, 10) || 0); w.isCustomized = true; };
+            row.appendChild(dw); row.appendChild(h('<span class="muted" style="flex:none">m</span>'));
           }
           if (s.kind === "recovery" || s.kind === "rest") {
             var jt = mkBtn(E.recoveryIsJog(s) ? "jog" : "stop", function () { s.restIsJog = !E.recoveryIsJog(s); w.isCustomized = true; drawSheet(sheet); });
@@ -559,7 +580,7 @@
     var v = E.velocityFromTest(d.testMeters, d.testMinutes);
     if (w.type === "quality" && w.kind) {
       var wk = (d.plan.weeks.find(function (x) { return x.index === state.detail.weekIndex; }) || {});
-      var fresh = E.qualityWorkout(w.kind, wk.phase || "build", v);
+      var fresh = E.buildWorkoutOfKind(w.kind, wk.phase || "build", v, d.goal || null, w.plannedMeters, d.level);
       fresh.steps.forEach(function (s) { s.id = rid("s-"); });
       w.steps = fresh.steps; w.detail = fresh.detail; w.isCustomized = false;
     } else {
@@ -605,33 +626,34 @@
   // ============================================================ calculator tab
   function renderCalc(body) {
     body.appendChild(h('<div class="card"><h2>Distance · Time · Pace</h2><p class="muted small">Fill in any two, leave the third blank, press Calculate.</p>' +
-      '<div class="grid3"><div><label class="field">Distance (' + ul() + ')</label><input id="c-d" inputmode="decimal" placeholder="10" /></div>' +
-      '<div><label class="field">Time (h:mm:ss)</label><input id="c-t" placeholder="45:00" /></div>' +
-      '<div><label class="field">Pace (/' + ul() + ')</label><input id="c-p" placeholder="4:30" /></div></div>' +
+      '<label class="field">Distance (' + ul() + ')</label><input id="c-d" inputmode="decimal" placeholder="10" />' +
+      '<label class="field">Time</label>' + hmsInputs("ct-h", "ct-m", "ct-s", 0) +
+      '<label class="field">Pace (/' + ul() + ')</label>' + msInputs("cp-m", "cp-s", 0) +
       '<button class="btn" id="calc">Calculate</button><div id="cout" class="small" style="margin-top:14px"></div></div>'));
     document.getElementById("calc").onclick = function () {
-      var dv = parseFloat(document.getElementById("c-d").value), t = parseTime(document.getElementById("c-t").value), p = parsePace(document.getElementById("c-p").value);
-      var r = E.solveDTP({ distanceM: dv > 0 ? E.toMeters(dv) : undefined, timeSec: isFinite(t) ? t : undefined, paceSecPerKm: isFinite(p) ? E.paceToPerKm(p) : undefined });
+      var dv = parseFloat(document.getElementById("c-d").value), t = readHMS("ct-h", "ct-m", "ct-s"), pms = readMS("cp-m", "cp-s");
+      var r = E.solveDTP({ distanceM: dv > 0 ? E.toMeters(dv) : undefined, timeSec: t > 0 ? t : undefined, paceSecPerKm: pms > 0 ? E.paceToPerKm(pms) : undefined });
       var out = document.getElementById("cout");
       if (!r) { out.className = "err"; out.textContent = "Enter at least two values."; return; }
       out.className = "";
       var dvo = E.fromMeters(r.distanceM).toFixed(2).replace(/\.?0+$/, "");
       document.getElementById("c-d").value = dvo;
-      document.getElementById("c-t").value = E.fmtHMS(r.timeSec);
-      document.getElementById("c-p").value = E.fmtPace(r.paceSecPerKm);
+      setHMS("ct-h", "ct-m", "ct-s", r.timeSec);
+      setMS("cp-m", "cp-s", r.paceSecPerKm * (E.unitInfo().m / 1000));
       out.innerHTML = '<b>' + dvo + ' ' + ul() + '</b> in <b>' + E.fmtHMS(r.timeSec) + '</b> = <b>' + E.fmtPace(r.paceSecPerKm) + ' /' + ul() + '</b>';
     };
     var pred = h('<div class="card"><h2>Race predictions (Riegel)</h2><p class="muted small">From a recent race or hard effort — distance + time.</p>' +
-      '<div class="grid2"><div><label class="field">From distance (' + ul() + ')</label><input id="r-d" inputmode="decimal" placeholder="10" /></div><div><label class="field">In time</label><input id="r-t" placeholder="45:00" /></div></div>' +
+      '<label class="field">From distance (' + ul() + ')</label><input id="r-d" inputmode="decimal" placeholder="10" />' +
+      '<label class="field">In time</label>' + hmsInputs("pr-h", "pr-m", "pr-s", 0) +
       '<button class="btn" id="predict">Predict</button><div id="rout" style="margin-top:12px"></div></div>');
     body.appendChild(pred);
     document.getElementById("predict").onclick = function () {
-      var dv = parseFloat(document.getElementById("r-d").value), t = parseTime(document.getElementById("r-t").value), out = document.getElementById("rout");
-      if (!(dv > 0) || !isFinite(t)) { out.className = "err small"; out.textContent = "Enter distance and time."; return; }
+      var dv = parseFloat(document.getElementById("r-d").value), t = readHMS("pr-h", "pr-m", "pr-s"), out = document.getElementById("rout");
+      if (!(dv > 0) || !(t > 0)) { out.className = "err small"; out.textContent = "Enter distance and time."; return; }
       var d1 = E.toMeters(dv);
       out.className = ""; out.innerHTML = E.RACE_PRESETS.map(function (p) { var tt = E.riegelPredict(t, d1, p.meters); return '<div class="zone"><div class="z-title">' + p.title + '</div><div class="z-pace mono">' + E.fmtHMS(tt) + '<div class="z-hr">' + E.fmtPace(tt / (p.meters / 1000)) + ' /' + ul() + '</div></div></div>'; }).join("");
     };
-    if (hasProfile()) { document.getElementById("r-d").value = E.fromMeters(state.data.testMeters).toFixed(2).replace(/\.?0+$/, ""); document.getElementById("r-t").value = E.fmtHMS(state.data.testMinutes * 60); }
+    if (hasProfile()) { document.getElementById("r-d").value = E.fromMeters(state.data.testMeters).toFixed(2).replace(/\.?0+$/, ""); setHMS("pr-h", "pr-m", "pr-s", state.data.testMinutes * 60); }
   }
 
   // ============================================================ account tab
