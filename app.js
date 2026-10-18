@@ -267,10 +267,12 @@
   function renderSetup(body) {
     var d = state.data || {}, g = d.goal || {};
     body.appendChild(h('<div class="card"><h2>Set up your plan</h2>' +
-      '<p class="muted small">Run one 30-min all-out test (15 min warm-up + 3–4 strides of 10 sec, 30 min hard, 10 min cool-down), then enter the distance you covered.</p>' +
+      '<p class="muted small">Enter any hard effort or recent race — a 30-min all-out test, a 5K, a 10K, a parkrun. We convert whatever you enter to your training paces (a 30-min test = the classic Pöhlitz test: 15 min warm-up + 3–4 strides of 10 sec, 30 min hard, 10 min cool-down).</p>' +
       '<label class="field">Name (optional)</label><input id="f-name" value="' + esc(d.name || "") + '" />' +
-      '<div class="grid2"><div><label class="field">Test distance (metres)</label><input id="f-m" type="number" inputmode="numeric" value="' + (d.testMeters || "") + '" placeholder="e.g. 9000" /></div>' +
-      '<div><label class="field">Test length</label><select id="f-min"><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select></div></div>' +
+      '<label class="field">Your test or recent race</label>' +
+      '<div class="row" id="f-presets" style="gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>' +
+      '<div class="grid2"><div><label class="field">Distance (' + ul() + ')</label><input id="f-td" inputmode="decimal" placeholder="e.g. 10" /></div>' +
+      '<div><label class="field">Time</label>' + hmsInputs("ft-h", "ft-m", "ft-s", 0) + '</div></div>' +
       '<label class="field">Training days per week</label><select id="f-days"><option>3</option><option>4</option><option>5</option><option>6</option></select>' +
       '<div class="grid2"><div><label class="field">Current level</label><select id="f-level"><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select></div>' +
       '<div><label class="field">Longest run lately (' + ul() + ', optional)</label><input id="f-long" type="number" inputmode="decimal" placeholder="e.g. 14" /></div></div>' +
@@ -281,7 +283,22 @@
       '<label class="field">Race date</label><input id="f-date" type="date" value="' + (g.dateISO ? g.dateISO.slice(0, 10) : "") + '" />' +
       '<label class="field">Goal time (optional)</label>' + hmsInputs("g-h", "g-m", "g-s", g.goalTimeSec) +
       '<button class="btn" id="gen">Generate my plan</button><div id="gmsg"></div></div>'));
-    if (d.testMinutes) document.getElementById("f-min").value = String(d.testMinutes);
+    if (d.testMeters > 0) document.getElementById("f-td").value = E.fromMeters(d.testMeters).toFixed(2).replace(/\.?0+$/, "");
+    if (d.testMinutes > 0) setHMS("ft-h", "ft-m", "ft-s", d.testMinutes * 60);
+    (function () {
+      var presets = [{ t: "30-min test", min: 30 }, { t: "5K", m: 5000 }, { t: "10K", m: 10000 }, { t: "15K", m: 15000 }, { t: "Half", m: 21097.5 }];
+      var pc = document.getElementById("f-presets");
+      presets.forEach(function (p) {
+        var b = h('<button class="stepbtn" style="width:auto;padding:0 12px;font-size:13px">' + p.t + '</button>');
+        b.onclick = function (e) {
+          e.preventDefault();
+          if (p.m) document.getElementById("f-td").value = E.fromMeters(p.m).toFixed(2).replace(/\.?0+$/, "");
+          if (p.min) setHMS("ft-h", "ft-m", "ft-s", p.min * 60);
+          (document.getElementById(p.min ? "f-td" : "ft-m") || {}).focus && document.getElementById(p.min ? "f-td" : "ft-m").focus();
+        };
+        pc.appendChild(b);
+      });
+    })();
     if (d.daysPerWeek) document.getElementById("f-days").value = String(d.daysPerWeek);
     if (d.level) document.getElementById("f-level").value = d.level;
     if (d.longestRunMeters > 0) document.getElementById("f-long").value = E.fromMeters(d.longestRunMeters).toFixed(2).replace(/\.?0+$/, "");
@@ -289,9 +306,11 @@
     function sc() { document.getElementById("custom-wrap").style.display = distSel.value === "custom" ? "" : "none"; }
     distSel.onchange = sc; sc();
     document.getElementById("gen").onclick = async function () {
-      var meters = parseFloat(document.getElementById("f-m").value), msg = document.getElementById("gmsg"); msg.className = "";
-      if (!(meters >= 1000)) { msg.className = "err"; msg.textContent = "Enter a test distance of at least 1000 m."; return; }
-      var minutes = parseFloat(document.getElementById("f-min").value), days = parseInt(document.getElementById("f-days").value, 10), goal = null;
+      var distVal = parseFloat(document.getElementById("f-td").value), msg = document.getElementById("gmsg"); msg.className = "";
+      var meters = distVal > 0 ? E.toMeters(distVal) : 0, secs = readHMS("ft-h", "ft-m", "ft-s");
+      if (!(meters >= 1000)) { msg.className = "err"; msg.textContent = "Enter a distance of at least 1 km (1 mi)."; return; }
+      if (!(secs >= 180)) { msg.className = "err"; msg.textContent = "Enter the time you ran it in (at least a few minutes)."; return; }
+      var minutes = secs / 60, days = parseInt(document.getElementById("f-days").value, 10), goal = null;
       var dv = distSel.value, dateV = document.getElementById("f-date").value;
       if (dv) {
         var gm, title;
@@ -616,7 +635,7 @@
   function renderPaces(body) {
     if (!hasProfile()) { body.appendChild(h('<div class="card muted">Set up your test first (Plan tab).</div>')); return; }
     var v = E.velocityFromTest(state.data.testMeters, state.data.testMinutes);
-    var card = h('<div class="card"><h2>Your training paces</h2><p class="muted small">Reference (100%) pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + ' /' + ul() + '</b> · from ' + state.data.testMeters + ' m in ' + state.data.testMinutes + ' min</p></div>');
+    var card = h('<div class="card"><h2>Your training paces</h2><p class="muted small">Reference (100%) pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + ' /' + ul() + '</b> · from ' + E.testEffortText(state.data.testMeters, state.data.testMinutes) + '</p></div>');
     E.allPrescriptions(v).forEach(function (rx) {
       card.appendChild(h('<div class="zone"><span class="dot" style="background:' + (DOT[rx.zone] || "var(--muted)") + '"></span><div><div class="z-title">' + rx.title + '</div>' + (rx.hr ? '<div class="z-hr">~' + rx.hr + ' bpm</div>' : "") + '</div><div class="z-pace mono">' + E.rangeText(rx) + '<div class="z-hr">/' + ul() + '</div></div></div>'));
     });
@@ -880,18 +899,34 @@
     // fitness test / retest
     if (hasProfile()) {
       var t = h('<div class="card"><h2>Fitness test (VCR)</h2>' +
-        '<p class="muted small">Active: <b>' + d.testMeters + ' m in ' + d.testMinutes + ' min</b> → ref pace ' + E.fmtPace(E.referencePace(E.velocityFromTest(d.testMeters, d.testMinutes))) + '/' + ul() + '</p>' +
+        '<p class="muted small">Active: <b>' + E.testEffortText(d.testMeters, d.testMinutes) + '</b> → ref pace ' + E.fmtPace(E.referencePace(E.velocityFromTest(d.testMeters, d.testMinutes))) + '/' + ul() + '</p>' +
         '<h3 style="margin-top:8px">Re-test</h3>' +
-        '<div class="grid2"><div><label class="field">New distance (m)</label><input id="rt-m" type="number" inputmode="numeric" placeholder="e.g. 9300" /></div>' +
-        '<div><label class="field">Length</label><select id="rt-min"><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select></div></div>' +
+        '<p class="muted small">Any hard effort or race — a 30-min test, a 5K, a 10K.</p>' +
+        '<div class="row" id="rt-presets" style="gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>' +
+        '<div class="grid2"><div><label class="field">Distance (' + ul() + ')</label><input id="rt-d" inputmode="decimal" placeholder="e.g. 10" /></div>' +
+        '<div><label class="field">Time</label>' + hmsInputs("rt-h", "rt-m", "rt-s", 0) + '</div></div>' +
         '<button class="btn" id="rt-use">Use as new reference (rebuild paces)</button>' +
         '<button class="btn secondary" id="rt-keep">Just record (keep current)</button><div id="rt-msg"></div>' +
         '<div id="rt-hist" class="sec"></div></div>');
       body.appendChild(t);
-      document.getElementById("rt-min").value = String(d.testMinutes);
+      (function () {
+        var presets = [{ t: "30-min test", min: 30 }, { t: "5K", m: 5000 }, { t: "10K", m: 10000 }, { t: "15K", m: 15000 }, { t: "Half", m: 21097.5 }];
+        var pc = document.getElementById("rt-presets");
+        presets.forEach(function (p) {
+          var b = h('<button class="stepbtn" style="width:auto;padding:0 12px;font-size:13px">' + p.t + '</button>');
+          b.onclick = function (e) {
+            e.preventDefault();
+            if (p.m) document.getElementById("rt-d").value = E.fromMeters(p.m).toFixed(2).replace(/\.?0+$/, "");
+            if (p.min) setHMS("rt-h", "rt-m", "rt-s", p.min * 60);
+          };
+          pc.appendChild(b);
+        });
+      })();
       function retest(activate) {
-        var m = parseFloat(document.getElementById("rt-m").value), mn = parseFloat(document.getElementById("rt-min").value), msg = document.getElementById("rt-msg"); msg.className = "";
-        if (!(m >= 1000)) { msg.className = "err"; msg.textContent = "Enter at least 1000 m."; return; }
+        var dv = parseFloat(document.getElementById("rt-d").value), msg = document.getElementById("rt-msg"); msg.className = "";
+        var m = dv > 0 ? E.toMeters(dv) : 0, secs = readHMS("rt-h", "rt-m", "rt-s"), mn = secs / 60;
+        if (!(m >= 1000)) { msg.className = "err"; msg.textContent = "Enter a distance of at least 1 km (1 mi)."; return; }
+        if (!(secs >= 180)) { msg.className = "err"; msg.textContent = "Enter the time you ran it in."; return; }
         d.testHistory = (d.testHistory || []).concat([{ id: rid("t-"), meters: m, minutes: mn, dateISO: new Date().toISOString() }]);
         if (activate) { d.testMeters = m; d.testMinutes = mn; regeneratePreserving(); }
         saveData(); renderMain();
@@ -902,7 +937,7 @@
       var rows = (d.testHistory || []).slice().reverse();
       hist.innerHTML = '<h4>History</h4>' + (rows.length ? rows.map(function (r) {
         var active = r.meters === d.testMeters && r.minutes === d.testMinutes;
-        return '<div class="toggle-row"><span class="small">' + new Date(r.dateISO).toLocaleDateString() + ' · ' + r.meters + ' m / ' + r.minutes + ' min · ' + E.fmtPace(E.referencePace(E.velocityFromTest(r.meters, r.minutes))) + '/' + ul() + '</span>' + (active ? '<span class="pill used">active</span>' : '<button class="stepbtn" style="width:auto;padding:0 10px;font-size:13px" data-uid="' + r.id + '">Use</button>') + '</div>';
+        return '<div class="toggle-row"><span class="small">' + new Date(r.dateISO).toLocaleDateString() + ' · ' + E.testEffortText(r.meters, r.minutes) + ' · ' + E.fmtPace(E.referencePace(E.velocityFromTest(r.meters, r.minutes))) + '/' + ul() + '</span>' + (active ? '<span class="pill used">active</span>' : '<button class="stepbtn" style="width:auto;padding:0 10px;font-size:13px" data-uid="' + r.id + '">Use</button>') + '</div>';
       }).join("") : '<span class="muted small">No history yet.</span>');
       Array.prototype.forEach.call(hist.querySelectorAll("[data-uid]"), function (b) {
         b.onclick = function () { var r = d.testHistory.find(function (x) { return x.id === b.getAttribute("data-uid"); }); if (r) { d.testMeters = r.meters; d.testMinutes = r.minutes; regeneratePreserving(); saveData(); renderMain(); } };
@@ -1011,7 +1046,7 @@
 
     if (!d || !(d.testMeters > 0)) { body.appendChild(h('<div class="card muted">This member hasn\'t set up a test yet.</div>')); return; }
     var v = E.velocityFromTest(d.testMeters, d.testMinutes);
-    var info = h('<div class="card small"><div class="muted">Reference pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + '/' + ul() + '</b> · test ' + d.testMeters + ' m / ' + d.testMinutes + ' min' + (d.goal ? ' · goal ' + esc(d.goal.title) : "") + '</div></div>');
+    var info = h('<div class="card small"><div class="muted">Reference pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + '/' + ul() + '</b> · test ' + E.testEffortText(d.testMeters, d.testMinutes) + (d.goal ? ' · goal ' + esc(d.goal.title) : "") + '</div></div>');
     body.appendChild(info);
     if (d.goal && d.plan) {
       var f = E.forecast(d.plan, d, E.currentWeekIndex(d.plan));

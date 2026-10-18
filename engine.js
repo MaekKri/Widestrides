@@ -18,9 +18,17 @@
 
   // ---- Velocity & pace -----------------------------------------------------
 
+  // Reference (VCR 100%) velocity from ANY hard effort / race, in m/s.
+  // Pöhlitz defines the reference as your velocity in a ~30-min max effort, so
+  // we normalise whatever the user entered (a 30-min test, a 5 K, a 10 K, a
+  // longer effort) to its 30-min (1800 s) equivalent distance via Riegel, then
+  // take that distance / 1800. A genuine 30-min test (minutes = 30) is
+  // unchanged: d30 == meters, so velocity == meters / 1800 as before.
   function velocityFromTest(meters, minutes) {
-    if (minutes <= 0) return 0;
-    return meters / (minutes * 60);           // m/s
+    if (!(minutes > 0) || !(meters > 0)) return 0;
+    var t = minutes * 60;
+    var d30 = meters * Math.pow(1800 / t, 1 / RIEGEL);  // distance coverable in 30 min
+    return d30 / 1800;                                  // m/s
   }
 
   // Snap to the table's 0.1 m/s grid, with a floor so a half-typed test can't
@@ -95,6 +103,14 @@
   }
 
   function referencePace(velocity) { return paceFromVelocity(roundToTable(velocity)); }
+
+  // Human-readable description of a stored test effort, e.g. "10.0 km in 44:30",
+  // in the current display unit. (Replaces the old "9000 m in 30 min".)
+  function testEffortText(meters, minutes) {
+    if (!(meters > 0) || !(minutes > 0)) return "—";
+    var dist = fromMeters(meters), txt = (dist >= 100 ? dist.toFixed(0) : dist.toFixed(2).replace(/\.?0+$/, ""));
+    return txt + " " + unitLabel() + " in " + fmtHMS(minutes * 60);
+  }
 
   // ---- Race math (Riegel) --------------------------------------------------
 
@@ -605,7 +621,7 @@
   function planningPrompt(profile, plan) {
     var v = velocityFromTest(profile.testMeters, profile.testMinutes);
     var L = ["You are my running coach. Help me refine my training plan."];
-    if (v > 0) L.push("My VCR reference velocity is " + roundToTable(v).toFixed(1) + " m/s (100% pace " + fmtPace(referencePace(v)) + "/km).");
+    if (v > 0) L.push("My VCR reference velocity is " + roundToTable(v).toFixed(1) + " m/s (100% pace " + fmtPace(referencePace(v)) + "/km), from my test effort " + testEffortText(profile.testMeters, profile.testMinutes) + " (normalised to the 30-min equivalent).");
     if (profile.goal) L.push("Goal: " + profile.goal.title + (profile.goal.dateISO ? " on " + new Date(profile.goal.dateISO).toDateString() : "") + (profile.goal.goalTimeSec ? ", target " + fmtHMS(profile.goal.goalTimeSec) : "") + ".");
     L.push("I train " + profile.daysPerWeek + " days/week (1 long, 1 quality, rest easy).");
     if (plan && plan.weeks[0]) {
@@ -653,7 +669,7 @@
     buildWorkoutOfKind, SESSION_KINDS,
     forecast, fmtShort, weeklyReview, blockReview,
     claudeUrl, planningPrompt, weeklyReviewPrompt, blockReviewPrompt,
-    prescription, allPrescriptions, rangeText, referencePace, ZONES,
+    prescription, allPrescriptions, rangeText, referencePace, testEffortText, ZONES,
     riegelPredict, solveDTP, fmtHMS, RACE_PRESETS, isSpeedFocused, km,
     peakLongRunMeters, taperWeeks,
     timeText, distanceText, stepDurationText, restText, stepPaceText, summarizeSteps,
