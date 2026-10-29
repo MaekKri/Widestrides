@@ -648,7 +648,13 @@
       '<label class="field">Distance (' + ul() + ')</label><input id="c-d" inputmode="decimal" placeholder="10" />' +
       '<label class="field">Time</label>' + hmsInputs("ct-h", "ct-m", "ct-s", 0) +
       '<label class="field">Pace (/' + ul() + ')</label>' + msInputs("cp-m", "cp-s", 0) +
-      '<button class="btn" id="calc">Calculate</button><div id="cout" class="small" style="margin-top:14px"></div></div>'));
+      '<div class="row" style="gap:8px"><button class="btn" id="calc" style="flex:1">Calculate</button><button class="btn secondary" id="calc-reset" style="flex:0 0 auto">Reset</button></div>' +
+      '<div id="cout" class="small" style="margin-top:14px"></div></div>'));
+    document.getElementById("calc-reset").onclick = function () {
+      ["c-d", "ct-h", "ct-m", "ct-s", "cp-m", "cp-s"].forEach(function (id) { var e = document.getElementById(id); if (e) e.value = ""; });
+      var out = document.getElementById("cout"); out.className = "small"; out.textContent = "";
+      document.getElementById("c-d").focus();
+    };
     document.getElementById("calc").onclick = function () {
       var dv = parseFloat(document.getElementById("c-d").value), t = readHMS("ct-h", "ct-m", "ct-s"), pms = readMS("cp-m", "cp-s");
       var r = E.solveDTP({ distanceM: dv > 0 ? E.toMeters(dv) : undefined, timeSec: t > 0 ? t : undefined, paceSecPerKm: pms > 0 ? E.paceToPerKm(pms) : undefined });
@@ -1048,6 +1054,31 @@
     var v = E.velocityFromTest(d.testMeters, d.testMinutes);
     var info = h('<div class="card small"><div class="muted">Reference pace <b class="mono">' + E.fmtPace(E.referencePace(v)) + '/' + ul() + '</b> · test ' + E.testEffortText(d.testMeters, d.testMinutes) + (d.goal ? ' · goal ' + esc(d.goal.title) : "") + '</div></div>');
     body.appendChild(info);
+
+    // Base pacing + the athlete's own inputs — collapsed, coach taps to view.
+    var baseCard = h('<div class="card"></div>');
+    var toggle = h('<a class="link small" style="font-weight:700">▸ Base pacing & athlete inputs</a>');
+    var detail = h('<div style="display:none;margin-top:10px"></div>');
+    var open = false;
+    toggle.onclick = function () { open = !open; detail.style.display = open ? "" : "none"; toggle.textContent = (open ? "▾" : "▸") + " Base pacing & athlete inputs"; };
+    // what the athlete entered
+    var longTxt = d.longestRunMeters > 0 ? (E.fromMeters(d.longestRunMeters).toFixed(2).replace(/\.?0+$/, "") + " " + ul()) : "—";
+    var goalTxt = d.goal ? (esc(d.goal.title) + (d.goal.dateISO ? " · " + new Date(d.goal.dateISO).toLocaleDateString() : "") + (d.goal.goalTimeSec ? " · target " + E.fmtHMS(d.goal.goalTimeSec) : "")) : "none";
+    detail.appendChild(h('<div class="sec"><h4>Athlete inputs</h4>' +
+      '<div class="small" style="line-height:1.9">' +
+      'Test effort: <b>' + E.testEffortText(d.testMeters, d.testMinutes) + '</b> → ref <b class="mono">' + E.fmtPace(E.referencePace(v)) + '/' + ul() + '</b><br>' +
+      'Level: <b>' + esc(d.level || "intermediate") + '</b><br>' +
+      'Longest run lately: <b>' + longTxt + '</b><br>' +
+      'Training days/week: <b>' + (d.daysPerWeek || "—") + '</b><br>' +
+      'Goal race: <b>' + goalTxt + '</b></div></div>'));
+    // base pacing zones (in the coach's current display unit)
+    var zwrap = h('<div class="sec"><h4>Base pacing (zones)</h4></div>');
+    E.allPrescriptions(v).forEach(function (rx) {
+      zwrap.appendChild(h('<div class="zone"><span class="dot" style="background:' + (DOT[rx.zone] || "var(--muted)") + '"></span><div><div class="z-title">' + rx.title + '</div>' + (rx.hr ? '<div class="z-hr">~' + rx.hr + ' bpm</div>' : "") + '</div><div class="z-pace mono">' + E.rangeText(rx) + '<div class="z-hr">/' + ul() + '</div></div></div>'));
+    });
+    detail.appendChild(zwrap);
+    baseCard.appendChild(toggle); baseCard.appendChild(detail);
+    body.appendChild(baseCard);
     if (d.goal && d.plan) {
       var f = E.forecast(d.plan, d, E.currentWeekIndex(d.plan));
       if (f) body.appendChild(h('<div class="card"><div style="font-weight:700;color:' + (f.isOnTrack ? "var(--easy)" : "var(--quality)") + '">' + esc(f.statusText) + '</div><div class="muted small" style="margin-top:4px">Projected ' + E.fmtHMS(f.predictedFinishSeconds) + ' vs goal ' + E.fmtHMS(f.goalSeconds) + '</div></div>'));
