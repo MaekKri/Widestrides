@@ -648,7 +648,7 @@
       '<label class="field">Distance (' + ul() + ')</label><input id="c-d" inputmode="decimal" placeholder="10" />' +
       '<label class="field">Time</label>' + hmsInputs("ct-h", "ct-m", "ct-s", 0) +
       '<label class="field">Pace (/' + ul() + ')</label>' + msInputs("cp-m", "cp-s", 0) +
-      '<div class="row" style="gap:8px"><button class="btn" id="calc" style="flex:1">Calculate</button><button class="btn secondary" id="calc-reset" style="flex:0 0 auto">Reset</button></div>' +
+      '<div class="row" style="gap:8px;margin-top:16px"><button class="btn" id="calc" style="flex:1;width:auto;margin-top:0">Calculate</button><button class="btn secondary" id="calc-reset" style="flex:0 0 auto;width:auto;margin-top:0;padding-left:20px;padding-right:20px">Reset</button></div>' +
       '<div id="cout" class="small" style="margin-top:14px"></div></div>'));
     document.getElementById("calc-reset").onclick = function () {
       ["c-d", "ct-h", "ct-m", "ct-s", "cp-m", "cp-s"].forEach(function (id) { var e = document.getElementById(id); if (e) e.value = ""; });
